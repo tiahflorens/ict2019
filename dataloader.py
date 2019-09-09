@@ -215,25 +215,41 @@ class DetectionLoader:
                 class__person_mask_ind = torch.nonzero(cls_person_mask[:, -2]).squeeze()
                 hm_dets = carperson[class__person_mask_ind].view(-1, 8)
 
+            hm_boxes, hm_scores = None, None
+            # print()
+            if hm_dets.size(0) > 0:
+                hm_boxes = hm_dets[:, 1:5]
+                hm_scores = hm_dets[:, 5:6]
+
+            car_box_conf = None
+            if car_dets.size(0) > 0:
+                car_box_conf = car_dets
+
             for k in range(len(orig_img)):  # for k-th image detection.
 
-                car_cand = car_dets[car_dets[:, 0] == k]
-                hm_cand = hm_dets[hm_dets[:, 0] == k]
+                # print('--------------- car person', carperson.size())
+                # print('--------------- hm dets', hm_dets.size())
+                # print('--------------- class ind', class__person_mask_ind.size())
+                # print()
+                # car_cand = car_dets[car_dets[:, 0] == k]
 
-                if car_cand.size(0) > 0:
-                    _car_np = car_cand.numpy()
+                if car_box_conf is None:
+                    car_k = None
+                else:
+                    car_k = car_box_conf[car_box_conf[:, 0] == k].numpy()
                     # car_boxes = car_cand[np.where(car_cand[:, 4] > 0.35)] # TODO check here, cls or bg/fg confidence?
                     # new_car = non_max_suppression_fast(car_boxes, overlapThresh=0.7) #TODO check here, NMS
 
-                if hm_cand.size(0) > 0:
-                    hm_boxes = hm_cand[:, 1:5]
-                    hm_scores = hm_cand[:, 5:6]
-                    inps = torch.zeros(hm_boxes.size(0), 3, opt.inputResH, opt.inputResW)
-                    pt1 = torch.zeros(hm_boxes.size(0), 2)
-                    pt2 = torch.zeros(hm_boxes.size(0), 2)
-                    item = (orig_img[k], im_name[k], hm_boxes, hm_scores, inps, pt1, pt2, car_cand)
+                if hm_boxes is not None:
+                    hm_boxes_k = hm_boxes[hm_dets[:, 0] == k]
+                    hm_scores_k = hm_scores[hm_dets[:, 0] == k]
+                    inps = torch.zeros(hm_boxes_k.size(0), 3, opt.inputResH, opt.inputResW)
+                    pt1 = torch.zeros(hm_boxes_k.size(0), 2)
+                    pt2 = torch.zeros(hm_boxes_k.size(0), 2)
+                    item = (orig_img[k], im_name[k], hm_boxes_k, hm_scores_k, inps, pt1, pt2, car_k)
+                    # print('video processor ', 'image' , im_name[k] , 'hm box ' , hm_boxes_k.size())
                 else:
-                    item = (orig_img[k], im_name[k], None, None, None, None, None, car_cand)  # 8-elemetns
+                    item = (orig_img[k], im_name[k], None, None, None, None, None, car_k)  # 8-elemetns
 
                 if self.Q.full():
                     time.sleep(2)
@@ -280,12 +296,14 @@ class DetectionProcessor:
 
             with torch.no_grad():
                 (orig_img, im_name, boxes, scores, inps, pt1, pt2, CAR) = self.detectionLoader.read()
+                # print('detection processor' , im_name, boxes)
 
                 if orig_img is None:
                     self.Q.put((None, None, None, None, None, None, None, None))
                     return
 
                 if boxes is None or boxes.nelement() == 0:
+
                     while self.Q.full():
                         time.sleep(0.2)
                     self.Q.put((None, orig_img, im_name, boxes, scores, None, None, CAR))
@@ -343,9 +361,8 @@ class DataWriter:
 
             if track_id in self.track_dict.keys():
                 track_obj = self.track_dict[track_id]
-                tracklet = track_obj['tracklet']
-                history = track_obj['history']
-
+                tracklet = track_obj[CAR_TRACKLET]
+                history = track_obj[MOVE_HISTORY]
                 moved = 0
                 if len(tracklet) > 1:
                     dist, diag = avg_dist(tracklet)
@@ -363,14 +380,15 @@ class DataWriter:
                     tracklet = tracklet[1:]
                 if len(history) > 120:
                     history = history[1:]
+                # if len()
 
-                track_obj['tracklet'] = tracklet
-                track_obj['history'] = history
-
+                track_obj[CAR_TRACKLET] = tracklet
+                track_obj[MOVE_HISTORY] = history
 
             else:
-                track_obj = {'tracklet': [xyxy],
-                             'history': [0]
+                track_obj = {CAR_TRACKLET: [xyxy],
+                             MOVE_HISTORY: [0],
+                             GTA_HISTORY: [0]
                              }
 
             self.track_dict[track_id] = track_obj
@@ -400,21 +418,21 @@ class DataWriter:
 
                 bbox_dets_list = []  # keyframe: start from empty
                 keypoints_list = []  # keyframe: start from empty
-
+                # print(boxes)
                 if boxes is None:  # No person detection
-                    bbox_det_dict = {"img_id": img_id,
-                                     "det_id": 0,
-                                     "track_id": None,
-                                     "bbox": [0, 0, 2, 2]}
-                    bbox_dets_list.append(bbox_det_dict)
+                    pass
+                    # bbox_det_dict = {"img_id": img_id,
+                    #                  "det_id": 0,
+                    #                  "track_id": None,
+                    #                  "bbox": [0, 0, 2, 2]}
+                    # bbox_dets_list.append(bbox_det_dict)
+                    #
+                    # keypoints_dict = {"img_id": img_id,
+                    #                   "det_id": 0,
+                    #                   "track_id": None,
+                    #                   "keypoints": []}
+                    # keypoints_list.append(keypoints_dict)
 
-                    keypoints_dict = {"img_id": img_id,
-                                      "det_id": 0,
-                                      "track_id": None,
-                                      "keypoints": []}
-                    keypoints_list.append(keypoints_dict)
-                    bbox_dets_list_list.append(bbox_dets_list)
-                    keypoints_list_list.append(keypoints_list)
 
                 else:
                     if opt.matching:
@@ -449,7 +467,18 @@ class DataWriter:
                         if proposal_score < 1.3:
                             continue
 
-                        keypoints = result_box['keypoints']
+                        keypoints = result_box['keypoints'] # torch, (17,2)
+                        keypoints_pf = np.zeros((15,2))
+
+                        idx_list = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9 ,0, 0, 0]
+                        for i, idx in enumerate(idx_list):
+                            keypoints_pf[i] = keypoints[idx]
+                        keypoints_pf[12] = (keypoints[5] + keypoints[6])/2 # neck
+
+
+                        # COCO-order {0-nose    1-Leye    2-Reye    3-Lear    4Rear    5-Lsho    6-Rsho    7-Lelb    8-Relb    9-Lwri    10-Rwri    11-Lhip    12-Rhip    13-Lkne    14-Rkne    15-Lank    16-Rank}　
+                        # PoseFLow order  #{0-Rank    1-Rkne    2-Rhip    3-Lhip    4-Lkne    5-Lank    6-Rwri    7-Relb    8-Rsho    9-Lsho   10-Lelb    11-Lwri    12-neck  13-nose　14-TopHead}
+
                         bbox_det = bbox_from_keypoints(keypoints)  # xxyy
 
                         # enlarge bbox by 20% with same center position
@@ -502,6 +531,7 @@ class DataWriter:
                                           "det_id": det_id,
                                           "track_id": track_id,
                                           "keypoints": keypoints,
+                                          'kp_poseflow':keypoints_pf,
                                           'kp_score': kp_score,
                                           'bbox': bbox_det,
                                           'proposal_score': proposal_score}
@@ -513,14 +543,15 @@ class DataWriter:
                     for det_id in range(num_dets):  # if IOU tracking failed, run pose matching tracking.
                         bbox_det_dict = bbox_dets_list[det_id]
                         keypoints_dict = keypoints_list[det_id]
+
                         # assert (det_id == bbox_det_dict["det_id"])
                         # assert (det_id == keypoints_dict["det_id"])
 
                         if bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
-                            track_id = bbox_det_dict["track_id"]
-                            # track_id, match_index = get_track_id_SGCN(bbox_det_dict["bbox"], bbox_list_prev_frame,
-                            #                                           keypoints_dict["keypoints"],
-                            #                                           keypoints_list_prev_frame)
+                            # track_id = bbox_det_dict["track_id"]
+                            track_id, match_index = get_track_id_SGCN(bbox_det_dict["bbox"], bbox_list_prev_frame,
+                                                                      keypoints_dict["kp_poseflow"],
+                                                                      keypoints_list_prev_frame)
 
                             if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
                                 del bbox_list_prev_frame[match_index]
@@ -529,24 +560,21 @@ class DataWriter:
                                 keypoints_dict["track_id"] = track_id
 
                             # if still can not find a match from previous frame, then assign a new id
-                            if track_id == -1 and not bbox_invalid(bbox_det_dict["bbox"]):
+                            # if track_id == -1 and not bbox_invalid(bbox_det_dict["bbox"]):
+                            if track_id == -1:
                                 bbox_det_dict["track_id"] = next_id
                                 keypoints_dict["track_id"] = next_id
                                 next_id += 1
 
                     # update frame
-                    bbox_dets_list_list.append(bbox_dets_list)
-                    keypoints_list_list.append(keypoints_list)
-
-                    # draw keypoints
                     vis_frame(img, keypoints_list)
 
                 """
                 Car
                 """
 
-                if CAR.size(0) > 0:
-                    car_np = CAR.numpy()
+                if CAR is not None:
+                    car_np = CAR
                     new_car_bboxs = car_np[:, 1:5].astype(np.uint32)
                     new_car_score = car_np[:, 5]
                     car_dest_list = []
@@ -582,7 +610,7 @@ class DataWriter:
                             car_bbox_det_dict["track_id"] = car_next_id
                             car_next_id += 1
 
-                    self.tracking(car_dest_list, img_id)
+                    self.tracking(car_dest_list)
                     car_dets_list_list.append(car_dest_list)
 
                 else:
@@ -593,6 +621,9 @@ class DataWriter:
                                      "bbox": [0, 0, 2, 2]}
                     car_dest_list.append(bbox_det_dict)
                     car_dets_list_list.append(car_dest_list)
+
+                bbox_dets_list_list.append(bbox_dets_list)
+                keypoints_list_list.append(keypoints_list)
 
                 if img_id != 0:
                     self.car_person_detection(car_dest_list, bbox_dets_list, img)
@@ -638,7 +669,7 @@ class DataWriter:
             track_id = car['track_id']
 
             tracker = self.track_dict[track_id]
-            history = tracker['history']
+            history = tracker[MOVE_HISTORY]
             moved = np.sum(history[-10:])
             last_moved = np.sum(history[-60:])
 

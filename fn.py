@@ -178,7 +178,6 @@ def vis_frame_tmp(frame, im_res, format='coco'):
     # im_name = im_res['imgname'].split('/')[-1]
     img = frame
     for human in im_res:
-
         part_line = {}
         kp_preds = human['keypoints']
         kp_scores = human['kp_score']

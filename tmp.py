@@ -38,11 +38,21 @@ UPPER = 'upper'
 LOWER = 'lower'
 MEAN = 'mean'
 
+
+GTA_HISTORY='gta_history'
+MOVE_HISTORY='mv_history'
+CAR_TRACKLET='car_tracklet'
+
 fourcc_avi = cv2.VideoWriter_fourcc('D', 'I', 'V', 'X')
 
 
-# from pose_match import Pose_Matcher
-# global pose_matcher
+
+
+
+
+
+from pose_match import Pose_Matcher
+global pose_matcher
 # pose_matcher = Pose_Matcher()
 
 
@@ -127,6 +137,8 @@ def keypoints_to_graph(keypoints, bbox):
     # num_keypoints = num_elements / 3
     # assert (num_keypoints == 15)
 
+    # COCO format
+
     x0, y0, w, h = bbox
     flag_pass_check = True
 
@@ -155,37 +167,47 @@ def get_pose_matching_score(keypoints_A, keypoints_B, bbox_A, bbox_B):
     #     return sys.maxsize
 
     if bbox_invalid(bbox_A) or bbox_invalid(bbox_B):
-        print("graph not correctly generated!")
+        print("graph not correctly generated, invalid bbox !")
         return sys.maxsize
 
     graph_A, flag_pass_check = keypoints_to_graph(keypoints_A, bbox_A)
     if flag_pass_check is False:
-        print("graph not correctly generated!")
+        print("graph not correctly generated!, graph A")
         return sys.maxsize
 
     graph_B, flag_pass_check = keypoints_to_graph(keypoints_B, bbox_B)
     if flag_pass_check is False:
-        print("graph not correctly generated!")
+        print("graph not correctly generated!, graph B ")
         return sys.maxsize
 
-    sample_graph_pair = (graph_A, graph_B)
-    data_A, data_B = graph_pair_to_data(sample_graph_pair)
+    # sample_graph_pair = (graph_A, graph_B)
+    # data_A, data_B = graph_pair_to_data(sample_graph_pair)
+    # data_A, data_B = graph_pair_to_data(sample_graph_pair)
+    data_A = graph_pair_to_data2(graph_A)
+    data_B = graph_pair_to_data2(graph_B)
+
 
     start = time.time()
     flag_match, dist = pose_matching(data_A, data_B)
     end = time.time()
     return dist
 
+def graph_pair_to_data2(graph):
+    graph = np.transpose(graph, [1, 0])
+    graph = np.expand_dims(graph, axis=2)
+    graph = np.expand_dims(graph, axis=1)
+    return graph
+
 
 def graph_pair_to_data(sample_graph_pair):
     data_numpy_pair = []
     for siamese_id in range(2):
         # fill data_numpy
-        data_numpy = np.zeros((2, 1, 15, 1))
+        data_numpy = np.zeros((2, 1, 15, 1)) # ( xy, 1 , 15 , 1 )
 
         pose = sample_graph_pair[:][siamese_id]
-        data_numpy[0, 0, :, 0] = [x[0] for x in pose]
-        data_numpy[1, 0, :, 0] = [x[1] for x in pose]
+        data_numpy[0, 0, :, 0] = [x[0] for x in pose] # x-cord
+        data_numpy[1, 0, :, 0] = [x[1] for x in pose] # y-cord
         data_numpy_pair.append(data_numpy)
     return data_numpy_pair[0], data_numpy_pair[1]
 
@@ -206,13 +228,15 @@ def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
 
         # check the pose matching score
         keypoints_dict = keypoints_list_prev_frame[det_index]
-        keypoints_prev_frame = keypoints_dict["keypoints"]
+        # keypoints_prev_frame = keypoints_dict["keypoints"]
+        keypoints_prev_frame = keypoints_dict["kp_poseflow"]
         if isinstance(keypoints_prev_frame, list):
             continue
         if isinstance(keypoints_cur_frame, list):
             continue
         pose_matching_score = get_pose_matching_score(keypoints_cur_frame, keypoints_prev_frame, bbox_cur_frame,
                                                       bbox_prev_frame)
+        print('[pse ,atcjomg score' , pose_matching_score)
 
         if pose_matching_score <= pose_matching_threshold and pose_matching_score <= min_matching_score:
             # match the target based on the pose matching score

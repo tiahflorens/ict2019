@@ -4,20 +4,16 @@ import platform
 PUMA = 'puma'
 OBAMA = 'obama'
 
-
-if platform.node() == PUMA: #
-    EXE = '/home/peter/.conda/envs/alpha.torch/bin/python'
+if platform.node() == PUMA:  #
+    EXE = '/home/peter/.conda/envs/py36/bin/python'
     VIDEOPATH = '/home/peter/dataset/gist'
     PATH_OUTPUT_ROOT = '/home/peter/dataset/alpha_gist'
 
 
 else:
-    EXE = '/home/peter/anaconda3/envs/alpha/bin/python'
+    EXE = '/home/peter/anaconda3/envs/py36/bin/python'
     VIDEOPATH = '/home/peter/extra/dataset/gist'
     PATH_OUTPUT_ROOT = '/home/peter/extra/dataset/alpha_gist'
-
-
-
 
 PY = 'video_demo.py'
 
@@ -27,23 +23,21 @@ DATA = 'gist/'
 if not os.path.exists(PATH_OUTPUT_ROOT):
     os.mkdir(PATH_OUTPUT_ROOT)
 
-for r, d, f in os.walk(VIDEOPATH):
-    # print(r,d,f)
-    for dd in d:
-        subdir = r.split(DATA)
-        if len(subdir) == 1:
-            tmp_path = os.path.join(PATH_OUTPUT_ROOT, dd)
-        else:
-            tmp_path = os.path.join(PATH_OUTPUT_ROOT, r.split(DATA)[1], dd)
+BASE = '/home/peter/dataset/gist/org/mid2019'
+SUBDIR = ['gta_dh_trial_2/trim_ohryong1.avi', 'gta_jh_trial_1/trim_ohryong1.avi', 'gta_jh_trial_2/trim_ohryong1.avi',
+          'gta_jh_trial_1/trim_student1.avi', 'roaming_kym_trial1/student4.avi']
 
-        if not os.path.exists(tmp_path):
-            os.mkdir(tmp_path)
+OUTDIR = '/home/peter/tmp/bbox_test'
+for dd in SUBDIR:
+    invideo = os.path.join(BASE, dd)
+    print(invideo, os.path.exists(invideo))
+    COMMAND = f'{EXE} {PY} --video {invideo} --outdir {OUTDIR} --save_video'
+    # print(COMMAND)
+    os.system(COMMAND)
 
-    for ff in f:
-        in_video = os.path.join(r, ff)
-        out_dir = os.path.join(PATH_OUTPUT_ROOT, r.split(DATA)[1])
-
-        if ff.split('.')[1] in ['avi', 'mp4', 'asf', 'webm', 'swp']:
-            print(f'{in_video} >> {out_dir}')
-            COMMAND = f'{EXE} {PY} --video {in_video} --outdir {out_dir} --save_video'
-            os.system(COMMAND)
+    DIR_NAME = dd.split('/')[0]
+    video_name = os.path.basename(invideo)
+    C2 = f'mv {OUTDIR}/AlphaPose_{video_name} {OUTDIR}/{DIR_NAME}_{video_name}'
+    # print(C2)
+    os.system(C2)
+    # quit()
