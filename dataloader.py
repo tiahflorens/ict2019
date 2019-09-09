@@ -170,7 +170,7 @@ class DetectionLoader:
 
         :return:
         """
-        for i in range(self.num_batches): # repeat
+        for i in range(self.num_batches):  # repeat
             img, orig_img, im_name, im_dim_list = self.dataloder.getitem()
             # img = (batch, frames)
             if img is None:
@@ -179,13 +179,14 @@ class DetectionLoader:
 
             with torch.no_grad():
                 # Human Detection
-                img = img.cuda()
-                prediction = self.det_model(img, CUDA=True) # batch * predictions
+                img = img.cuda()  # image ( B, 3, 608,608 )
+                prediction = self.det_model(img, CUDA=True)
+                # ( B, 22743, 85 ) = ( batchsize, proposal boxes, xywh+cls)
+                # predictions for each B image.
 
                 # NMS process
                 carperson = dynamic_write_results(prediction, opt.confidence, opt.num_classes, nms=True,
                                                   nms_conf=opt.nms_thesh)
-
                 if isinstance(carperson, int) or carperson.shape[0] == 0:
                     for k in range(len(orig_img)):
                         if self.Q.full():
@@ -193,7 +194,7 @@ class DetectionLoader:
                         self.Q.put((orig_img[k], im_name[k], None, None, None, None, None, None))  # 8 elements
                     continue
 
-                carperson = carperson.cpu() # batch, (1) k-th image , (7) x,y,w,h,c, cls_score, cls_index
+                carperson = carperson.cpu()  # (1) k-th image , (7) x,y,w,h,c, cls_score, cls_index
                 im_dim_list = torch.index_select(im_dim_list, 0, carperson[:, 0].long())
                 scaling_factor = torch.min(self.det_inp_dim / im_dim_list, 1)[0].view(-1, 1)
 
@@ -214,65 +215,29 @@ class DetectionLoader:
                 class__person_mask_ind = torch.nonzero(cls_person_mask[:, -2]).squeeze()
                 hm_dets = carperson[class__person_mask_ind].view(-1, 8)
 
+            for k in range(len(orig_img)):  # for k-th image detection.
 
-                hm_boxes, hm_scores = None, None
-                if hm_dets.size(0) > 0:
-                    hm_boxes = hm_dets[:, 1:5]
-                    hm_scores = hm_dets[:, 5:6]
+                car_cand = car_dets[car_dets[:, 0] == k]
+                hm_cand = hm_dets[hm_dets[:, 0] == k]
 
-            for k in range(len(orig_img)):
+                if car_cand.size(0) > 0:
+                    _car_np = car_cand.numpy()
+                    # car_boxes = car_cand[np.where(car_cand[:, 4] > 0.35)] # TODO check here, cls or bg/fg confidence?
+                    # new_car = non_max_suppression_fast(car_boxes, overlapThresh=0.7) #TODO check here, NMS
 
-
-
-                tmp = car_dets[car_dets[:, 0] == k]
-                tmp2 = hm_dets[hm_dets[:, 0] == k]
-                print('car det', car_dets.size(), ' k-slice', tmp.size(), tmp)
-                print('hm det', hm_dets.size(), ' k-slice', tmp2.size(), tmp2)
-                # If car detection exists
-                if car_dets.size(0) > 0:
-                    A = car_dets[car_dets[:, 0] == k] # for k-th image
-                    _car_np = A.numpy()
-                    car_np = _car_np[:, 1:6] # (1) k-th image , (7) x,y,w,h,c, cls_score, cls_index
-
-                    car_boxes = car_np[np.where(car_np[:, 4] > 0.35)]
-                    new_car = car_np
-                    # new_car = non_max_suppression_fast(car_boxes, overlapThresh=0.7) #TODO check here
-
+                if hm_cand.size(0) > 0:
+                    hm_boxes = hm_cand[:, 1:5]
+                    hm_scores = hm_cand[:, 5:6]
+                    inps = torch.zeros(hm_boxes.size(0), 3, opt.inputResH, opt.inputResW)
+                    pt1 = torch.zeros(hm_boxes.size(0), 2)
+                    pt2 = torch.zeros(hm_boxes.size(0), 2)
+                    item = (orig_img[k], im_name[k], hm_boxes, hm_scores, inps, pt1, pt2, car_cand)
                 else:
-                    new_car = None
+                    item = (orig_img[k], im_name[k], None, None, None, None, None, car_cand)  # 8-elemetns
 
-                # if person detection exists
-
-
-
-
-
-                if hm_boxes is None:
-                    if self.Q.full():
-                        time.sleep(2)
-                    self.Q.put((orig_img[k], im_name[k], None, None, None, None, None, new_car))  # 8-elemetns
-                else:
-
-                    k_inds = hm_dets[:, 0] == k
-
-                    boxes_k = hm_boxes[k_inds]  # _dets = [ person + car ] -- > img_car_pred + dets
-                    if isinstance(boxes_k, int) or boxes_k.shape[0] == 0:
-                        if self.Q.full():
-                            time.sleep(2)
-                        self.Q.put((orig_img[k], im_name[k], None, None, None, None, None, new_car))  # 8-elemetns
-                    else:
-                        inps = torch.zeros(boxes_k.size(0), 3, opt.inputResH, opt.inputResW)
-                        pt1 = torch.zeros(boxes_k.size(0), 2)
-                        pt2 = torch.zeros(boxes_k.size(0), 2)
-
-                        if self.Q.full():
-                            time.sleep(2)
-                        self.Q.put((orig_img[k], im_name[k], boxes_k, hm_scores[k_inds], inps, pt1, pt2, new_car))
-
-                # B, C = None, None
-                # if boxes is not None:
-
-        # print('update end ------------------------------------------')
+                if self.Q.full():
+                    time.sleep(2)
+                self.Q.put(item)
 
     def read(self):
         # return next frame in the queue
@@ -319,10 +284,6 @@ class DetectionProcessor:
                 if orig_img is None:
                     self.Q.put((None, None, None, None, None, None, None, None))
                     return
-
-                # print('detect', im_name, 'before convert ', CAR[0,1:5])
-                # A_CAR = convert_bbox_car(inp, CAR)
-                # print('detect', im_name, 'after convert', A_CAR[0, 1:5])
 
                 if boxes is None or boxes.nelement() == 0:
                     while self.Q.full():
