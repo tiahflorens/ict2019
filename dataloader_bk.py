@@ -307,6 +307,189 @@ class DetectionProcessor:
         return self.Q.qsize()
 
 
+class VideoDetectionLoader:
+    def __init__(self, path, batchSize=4, queueSize=256):
+        # initialize the file video stream along with the boolean
+        # used to indicate if the thread should be stopped or not
+        self.det_model = Darknet("yolo/cfg/yolov3-spp.cfg")
+        self.det_model.load_weights('models/yolo/yolov3-spp.weights')
+        self.det_model.net_info['height'] = opt.inp_dim
+        self.det_inp_dim = int(self.det_model.net_info['height'])
+        assert self.det_inp_dim % 32 == 0
+        assert self.det_inp_dim > 32
+        self.det_model.cuda()
+        self.det_model.eval()
+
+        self.stream = cv2.VideoCapture(path)
+        assert self.stream.isOpened(), 'Cannot capture source'
+        self.stopped = False
+        self.batchSize = batchSize
+        self.datalen = int(self.stream.get(cv2.CAP_PROP_FRAME_COUNT))
+        leftover = 0
+        if (self.datalen) % batchSize:
+            leftover = 1
+        self.num_batches = self.datalen // batchSize + leftover
+        # initialize the queue used to store frames read from
+        # the video file
+        self.Q = Queue(maxsize=queueSize)
+
+    def length(self):
+        return self.datalen
+
+    def len(self):
+        return self.Q.qsize()
+
+    def start(self):
+        # start a thread to read frames from the file video stream
+        t = Thread(target=self.update, args=())
+        t.daemon = True
+        t.start()
+        return self
+
+    def update(self):
+        # keep looping the whole video
+        for i in range(self.num_batches):
+            img = []
+            inp = []
+            orig_img = []
+            im_name = []
+            im_dim_list = []
+            for k in range(i * self.batchSize, min((i + 1) * self.batchSize, self.datalen)):
+                (grabbed, frame) = self.stream.read()
+                # if the `grabbed` boolean is `False`, then we have
+                # reached the end of the video file
+                if not grabbed:
+                    self.stop()
+                    return
+                # process and add the frame to the queue
+                inp_dim = int(opt.inp_dim)
+                img_k, orig_img_k, im_dim_list_k = prep_frame(frame, inp_dim)
+                inp_k = im_to_torch(orig_img_k)
+
+                img.append(img_k)
+                inp.append(inp_k)
+                orig_img.append(orig_img_k)
+                im_dim_list.append(im_dim_list_k)
+
+            with torch.no_grad():
+                ht = inp[0].size(1)
+                wd = inp[0].size(2)
+                # Human Detection
+                img = Variable(torch.cat(img)).cuda()
+                im_dim_list = torch.FloatTensor(im_dim_list).repeat(1, 2)
+                im_dim_list = im_dim_list.cuda()
+
+                prediction = self.det_model(img, CUDA=True)
+                # NMS process
+                dets = dynamic_write_results(prediction, opt.confidence,
+                                             opt.num_classes, nms=True, nms_conf=opt.nms_thesh)
+                if isinstance(dets, int) or dets.shape[0] == 0:
+                    for k in range(len(inp)):
+                        while self.Q.full():
+                            time.sleep(0.2)
+                        self.Q.put((inp[k], orig_img[k], None, None))
+                    continue
+
+                im_dim_list = torch.index_select(im_dim_list, 0, dets[:, 0].long())
+                scaling_factor = torch.min(self.det_inp_dim / im_dim_list, 1)[0].view(-1, 1)
+
+                # coordinate transfer
+                dets[:, [1, 3]] -= (self.det_inp_dim - scaling_factor * im_dim_list[:, 0].view(-1, 1)) / 2
+                dets[:, [2, 4]] -= (self.det_inp_dim - scaling_factor * im_dim_list[:, 1].view(-1, 1)) / 2
+
+                dets[:, 1:5] /= scaling_factor
+                for j in range(dets.shape[0]):
+                    dets[j, [1, 3]] = torch.clamp(dets[j, [1, 3]], 0.0, im_dim_list[j, 0])
+                    dets[j, [2, 4]] = torch.clamp(dets[j, [2, 4]], 0.0, im_dim_list[j, 1])
+                boxes = dets[:, 1:5].cpu()
+                scores = dets[:, 5:6].cpu()
+
+            for k in range(len(inp)):
+                while self.Q.full():
+                    time.sleep(0.2)
+                self.Q.put((inp[k], orig_img[k], boxes[dets[:, 0] == k], scores[dets[:, 0] == k]))
+
+    def videoinfo(self):
+        # indicate the video info
+        fourcc = int(self.stream.get(cv2.CAP_PROP_FOURCC))
+        fps = self.stream.get(cv2.CAP_PROP_FPS)
+        frameSize = (int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        return (fourcc, fps, frameSize)
+
+    def read(self):
+        # return next frame in the queue
+        return self.Q.get()
+
+    def more(self):
+        # return True if there are still frames in the queue
+        return self.Q.qsize() > 0
+
+    def stop(self):
+        # indicate that the thread should be stopped
+        self.stopped = True
+
+
+class WebcamLoader:
+    def __init__(self, webcam, queueSize=256):
+        # initialize the file video stream along with the boolean
+        # used to indicate if the thread should be stopped or not
+        self.stream = cv2.VideoCapture(int(webcam))
+        assert self.stream.isOpened(), 'Cannot capture source'
+        self.stopped = False
+        # initialize the queue used to store frames read from
+        # the video file
+        self.Q = LifoQueue(maxsize=queueSize)
+
+    def start(self):
+        # start a thread to read frames from the file video stream
+        t = Thread(target=self.update, args=())
+        t.daemon = True
+        t.start()
+        return self
+
+    def update(self):
+        # keep looping infinitely
+        while True:
+            # otherwise, ensure the queue has room in it
+            if not self.Q.full():
+                # read the next frame from the file
+                (grabbed, frame) = self.stream.read()
+                # if the `grabbed` boolean is `False`, then we have
+                # reached the end of the video file
+                if not grabbed:
+                    self.stop()
+                    return
+                # process and add the frame to the queue
+                inp_dim = int(opt.inp_dim)
+                img, orig_img, dim = prep_frame(frame, inp_dim)
+                inp = im_to_torch(orig_img)
+                im_dim_list = torch.FloatTensor([dim]).repeat(1, 2)
+
+                self.Q.put((img, orig_img, inp, im_dim_list))
+            else:
+                with self.Q.mutex:
+                    self.Q.queue.clear()
+
+    def videoinfo(self):
+        # indicate the video info
+        fourcc = int(self.stream.get(cv2.CAP_PROP_FOURCC))
+        fps = self.stream.get(cv2.CAP_PROP_FPS)
+        frameSize = (int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        return (fourcc, fps, frameSize)
+
+    def read(self):
+        # return next frame in the queue
+        return self.Q.get()
+
+    def len(self):
+        # return queue size
+        return self.Q.qsize()
+
+    def stop(self):
+        # indicate that the thread should be stopped
+        self.stopped = True
+
+
 class DataWriter:
     def __init__(self, save_video=False,
                  savepath='examples/res/1.avi', fourcc=cv2.VideoWriter_fourcc(*'XVID'), fps=25, frameSize=(640, 480),
@@ -335,13 +518,15 @@ class DataWriter:
         t.start()
         return self
 
-    def tracking(self, det_list):
+    def tracking(self, det_list, img_id):
 
         for det in det_list:
             track_id = det['track_id']
+            # x,y,w,h = det['bbox']
             xyxy = xywh_to_x1y1x2y2(det['bbox'])
 
             if track_id in self.track_dict.keys():
+
                 track_obj = self.track_dict[track_id]
                 tracklet = track_obj['tracklet']
                 history = track_obj['history']
@@ -350,8 +535,6 @@ class DataWriter:
                 if len(tracklet) > 1:
                     dist, diag = avg_dist(tracklet)
                     th = diag * 0.02
-                    # TODO more condition,
-                    # center of bbox is actually moved? |x1-x2| > 20
                     if dist > th:
                         moved = 1
                     else:
@@ -375,12 +558,37 @@ class DataWriter:
 
             self.track_dict[track_id] = track_obj
 
+    def is_moving(self, track_id):
+
+        moved = False
+
+        if track_id in self.track_dict.keys():
+            tracklet = self.track_dict[track_id]
+
+            if len(tracklet) > 1:
+
+                dist, diag = avg_dist(tracklet)
+                th = diag * 0.02
+                # if track_id >50:
+                #     print('id', track_id, 'moved' , dist, 'th', th)
+
+                if dist > th:
+                    moved = True
+
+        return moved
+
     def update(self):
+        # keep looping infinitely
+
+        frame_prev = -1
+        frame_cur = 0
+        img_id = -1
         next_id = 0
-        car_next_id = 0
         bbox_dets_list_list = []
         keypoints_list_list = []
         car_dets_list_list = []
+
+        car_next_id = 0
 
         while True:
             # if the thread indicator variable is set, stop the
@@ -413,6 +621,7 @@ class DataWriter:
                                       "track_id": None,
                                       "keypoints": []}
                     keypoints_list.append(keypoints_dict)
+
                     bbox_dets_list_list.append(bbox_dets_list)
                     keypoints_list_list.append(keypoints_list)
 
@@ -428,7 +637,25 @@ class DataWriter:
                                                                           opt.inputResW, opt.outputResH,
                                                                           opt.outputResW)
                         result = pose_nms(boxes, scores, preds_img, preds_scores)  # list type
-                        # result = {  'keypoints': ,  'kp_score': , 'proposal_score': ,  'bbox' }
+
+                        # 'keypoints':
+                        # 'kp_score':
+                        # 'proposal_score':
+                        # 'bbox'
+                    #
+                    # print('boexes', boxes.size(), boxes)
+                    # for aa in result:
+                    #     keys = aa['keypoints']
+                    #     bbox2  = aa['bbox']
+                    #     print('pose nms keys', keys.size())
+                    #     print('pose nms, box', bbox2.size(), bbox2)
+                    #
+                    # _result = {
+                    #     'imgname': img_id,
+                    #     'result': result,
+                    #     'pt1': pt1,
+                    #     'pt2': pt2
+                    # }
 
                     if img_id > 0:  # First frame does not have previous frame
                         bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
@@ -439,11 +666,11 @@ class DataWriter:
 
                     # boxes.size(0)
                     num_dets = len(result)
-                    for det_id in range(num_dets):  # IOU tracking for detections in current frame.
-                        # detections for current frame
+                    for det_id in range(num_dets):  # detections for current frame
                         # obtain bbox position and track id
 
                         result_box = result[det_id]
+
                         kp_score = result_box['kp_score']
                         proposal_score = result_box['proposal_score'].numpy()[0]
                         if proposal_score < 1.3:
@@ -480,9 +707,14 @@ class DataWriter:
 
                         # # update current frame bbox
 
+                        # obtain keypoints for each bbox position in the keyframe
+
+                        # print('img id ', img_id)
+
                         if img_id == 0:  # First frame, all ids are assigned automatically
                             track_id = next_id
                             next_id += 1
+
                         else:
                             track_id, match_index = get_track_id_SpatialConsistency(bbox_det, bbox_list_prev_frame)
                             # print('track' ,track_id, match_index)
@@ -496,6 +728,7 @@ class DataWriter:
                                          "det_id": det_id,
                                          "track_id": track_id,
                                          "bbox": bbox_det}
+                        bbox_dets_list.append(bbox_det_dict)
 
                         # update current frame keypoints
                         keypoints_dict = {"img_id": img_id,
@@ -505,12 +738,10 @@ class DataWriter:
                                           'kp_score': kp_score,
                                           'bbox': bbox_det,
                                           'proposal_score': proposal_score}
-
-                        bbox_dets_list.append(bbox_det_dict)
                         keypoints_list.append(keypoints_dict)
 
                     num_dets = len(bbox_dets_list)
-                    for det_id in range(num_dets):  # if IOU tracking failed, run pose matching tracking.
+                    for det_id in range(num_dets):  # detections for current frame
                         bbox_det_dict = bbox_dets_list[det_id]
                         keypoints_dict = keypoints_list[det_id]
                         # assert (det_id == bbox_det_dict["det_id"])
@@ -535,20 +766,24 @@ class DataWriter:
                                 next_id += 1
 
                     # update frame
+
                     bbox_dets_list_list.append(bbox_dets_list)
                     keypoints_list_list.append(keypoints_list)
 
                     # draw keypoints
+
                     vis_frame(img, keypoints_list)
+                    # _pt1, _pt2 = _result['pt1'].numpy(), _result['pt2'].numpy()
+                    # pt1 = _pt1.astype(np.uint32)
+                    # pt2 = _pt2.astype(np.uint32)
+                    # for p1, p2 in zip(pt1, pt2):
+                    #     cv2.rectangle(img, (p1[0], p1[1]), (p2[0], p2[1]), (34, 154, 11), 1)
 
-                """
-                Car
-                """
-
-                if CAR.size(0) > 0:
-                    car_np = CAR.numpy()
-                    new_car_bboxs = car_np[:, 1:5].astype(np.uint32)
-                    new_car_score = car_np[:, 5]
+                if CAR is not None:  # No car detection
+                    car_track_id = 0
+                    car_np = CAR
+                    new_car_bboxs = car_np[:, 0:4].astype(np.uint32)
+                    new_car_score = car_np[:, 4]
                     car_dest_list = []
 
                     if img_id > 1:  # First frame does not have previous frame
@@ -562,9 +797,15 @@ class DataWriter:
                         bbox_in_xywh = enlarge_bbox(car_bbox_det, enlarge_scale)
                         bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
 
+                        # obtain keypoints for each bbox position in the keyframe
+
+                        # print('img id ', img_id)
+
                         if img_id == 0:  # First frame, all ids are assigned automatically
                             car_track_id = car_next_id
                             car_next_id += 1
+                            # print('if img id zero' , car_next_id)
+
                         else:
                             car_track_id, match_index = get_track_id_SpatialConsistency(bbox_det,
                                                                                         car_bbox_list_prev_frame)
@@ -577,12 +818,58 @@ class DataWriter:
                                          "bbox": bbox_det}
                         car_dest_list.append(bbox_det_dict)
 
-                    for car_bbox_det_dict in car_dest_list:  # detections for current frame
+                    # print()
+                    num_dets = len(car_dest_list)
+                    for det_id in range(num_dets):  # detections for current frame
+                        car_bbox_det_dict = car_dest_list[det_id]
+                        # assert (det_id == bbox_det_dict["det_id"])
+                        # assert (det_id == keypoints_dict["det_id"])
+                        # print(car_bbox_det_dict["track_id"])
                         if car_bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
                             car_bbox_det_dict["track_id"] = car_next_id
                             car_next_id += 1
+                            # print('car net id ', car_next_id)
 
                     self.tracking(car_dest_list, img_id)
+
+                    for car in car_dest_list:
+                        x, y, w, h = car['bbox']
+                        track_id = car['track_id']
+
+                        tracker = self.track_dict[track_id]
+                        history = tracker['history']
+                        moved = np.sum(history[-10:])
+                        last_moved = np.sum(history[-60:])
+
+                        COLOR_MOVING = (0, 255, 0)
+                        COLOR_RED = (0, 0, 255)
+
+                        COLOR_INACTIVE = (255, 0, 0)
+
+                        cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
+                        text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
+
+                        # if moved:
+                        #     cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_MOVING, 1)
+                        #     text_filled(img, (x, y), f'CAR {track_id} Active', COLOR_MOVING)
+                        # else:
+                        #
+                        #     if last_moved:
+                        #         cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_RED, 1)
+                        #         text_filled(img, (x, y), f'CAR {track_id} Standstill', COLOR_RED)
+                        #
+                        #         cropped = img[y:y+h, x:x+w,:]
+                        #         filter = np.zeros(cropped.shape,dtype=img.dtype)
+                        #         # print(cropped.shape, filter.shape)
+                        #         filter[:,:,2] = 255
+                        #         # print(overlay.shape)
+                        #         # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
+                        #         overlayed = cv2.addWeighted(cropped,0.8,filter,0.2,0)
+                        #         img[y:y+h, x:x+w,:] = overlayed[:,:,:]
+                        #     else:
+                        #         cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
+                        #         text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
+
                     car_dets_list_list.append(car_dest_list)
 
                 else:
@@ -594,9 +881,29 @@ class DataWriter:
                     car_dest_list.append(bbox_det_dict)
                     car_dets_list_list.append(car_dest_list)
 
-                if img_id != 0:
-                    self.car_person_detection(car_dest_list, bbox_dets_list, img)
-                    self.car_parking_detection(car_dest_list, img)
+                # if img_id != 0:
+                #     for car in car_dets_list_list[-1]:
+                #         car_track_id = car['track_id']
+                #         if car_track_id is None:
+                #             continue
+                #
+                #         car_bbox = car['bbox']
+                #         for human in bbox_dets_list_list[-1]:
+                #             human_track_id = human['track_id']
+                #             if human_track_id is None:
+                #                 continue
+                #             hum_bbox = human['bbox']
+                #             boxa = xywh_to_x1y1x2y2(hum_bbox)
+                #             boxb = xywh_to_x1y1x2y2(car_bbox)
+                #             x,y,w,h = x1y1x2y2_to_xywh(boxa)
+                #             area = iou(boxa,boxb)
+                #
+                #             if area > 0.02:
+                #                 cropped = img[y:y+h, x:x+w,:]
+                #                 filter = np.zeros(cropped.shape,dtype=img.dtype)
+                #                 filter[:,:,2] = 255
+                #                 overlayed = cv2.addWeighted(cropped,0.9,filter,0.1,0)
+                #                 img[y:y+h, x:x+w,:] = overlayed[:,:,:]
 
                 if opt.vis:
                     cv2.imshow("AlphaPose Demo", img)
@@ -605,71 +912,6 @@ class DataWriter:
                     self.stream.write(img)
             else:
                 time.sleep(0.1)
-
-    def car_person_detection(self, car_dets_list, hm_dets_list, img):
-
-        for car in car_dets_list:
-            car_track_id = car['track_id']
-            if car_track_id is None:
-                continue
-
-            car_bbox = car['bbox']
-            for human in hm_dets_list:
-                human_track_id = human['track_id']
-                if human_track_id is None:
-                    continue
-                hum_bbox = human['bbox']
-                boxa = xywh_to_x1y1x2y2(hum_bbox)
-                boxb = xywh_to_x1y1x2y2(car_bbox)
-                x, y, w, h = x1y1x2y2_to_xywh(boxa)
-                area = iou(boxa, boxb)
-
-                if area > 0.02:
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, 2] = 255
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-    def car_parking_detection(self, car_dest_list, img):
-
-        for car in car_dest_list:
-            x, y, w, h = car['bbox']
-            track_id = car['track_id']
-
-            tracker = self.track_dict[track_id]
-            history = tracker['history']
-            moved = np.sum(history[-10:])
-            last_moved = np.sum(history[-60:])
-
-            COLOR_MOVING = (0, 255, 0)
-            COLOR_RED = (0, 0, 255)
-
-            COLOR_INACTIVE = (255, 0, 0)
-
-            cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
-            text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
-
-            if moved:
-                cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_MOVING, 1)
-                text_filled(img, (x, y), f'CAR {track_id} Active', COLOR_MOVING)
-            else:
-
-                if last_moved:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_RED, 1)
-                    text_filled(img, (x, y), f'CAR {track_id} Standstill', COLOR_RED)
-
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    # print(cropped.shape, filter.shape)
-                    filter[:, :, 2] = 255
-                    # print(overlay.shape)
-                    # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
-                    overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-                else:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
 
     def running(self):
         # indicate that the thread is still running
@@ -723,6 +965,58 @@ class Mscoco(data.Dataset):
 
     def __len__(self):
         pass
+
+
+def int2round(src):
+    """
+    returns rounded integer recursively
+    :param src:
+    :return:
+    """
+    if isinstance(src, float):
+        return int(round(src))
+
+    elif isinstance(src, tuple):
+        res = []
+        for i in range(len(src)):
+            res.append(int(round(src[i])))
+        return tuple(res)
+
+    elif isinstance(src, list):
+        res = []
+        for i in range(len(src)):
+            res.append(int2round(src[i]))
+        return res
+    elif isinstance(src, int):
+        return src
+    if isinstance(src, str):
+        return int(src)
+
+
+def convert_bbox_car(img, boxes):
+    imght = img.size(1)
+    imgwidth = img.size(2)
+
+    for i, box in enumerate(boxes):
+        upLeft = torch.Tensor((float(box[1]), float(box[2])))
+        bottomRight = torch.Tensor((float(box[3]), float(box[4])))
+
+        ht = bottomRight[1] - upLeft[1]
+        width = bottomRight[0] - upLeft[0]
+
+        scaleRate = 0.3
+
+        upLeft[0] = max(0, upLeft[0] - width * scaleRate / 2)
+        upLeft[1] = max(0, upLeft[1] - ht * scaleRate / 2)
+        bottomRight[0] = max(min(imgwidth - 1, bottomRight[0] + width * scaleRate / 2), upLeft[0] + 5)
+        bottomRight[1] = max(min(imght - 1, bottomRight[1] + ht * scaleRate / 2), upLeft[1] + 5)
+
+        boxes[i, 1] = upLeft[0]
+        boxes[i, 2] = upLeft[1]
+        boxes[i, 3] = bottomRight[0]
+        boxes[i, 4] = bottomRight[1]
+
+    return boxes
 
 
 def crop_from_dets(img, boxes, inps, pt1, pt2):

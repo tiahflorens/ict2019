@@ -45,10 +45,37 @@ fourcc_avi = cv2.VideoWriter_fourcc('D', 'I', 'V', 'X')
 # global pose_matcher
 # pose_matcher = Pose_Matcher()
 
+
+def int2round(src):
+    """
+    returns rounded integer recursively
+    :param src:
+    :return:
+    """
+    if isinstance(src, float):
+        return int(round(src))
+
+    elif isinstance(src, tuple):
+        res = []
+        for i in range(len(src)):
+            res.append(int(round(src[i])))
+        return tuple(res)
+
+    elif isinstance(src, list):
+        res = []
+        for i in range(len(src)):
+            res.append(int2round(src[i]))
+        return res
+    elif isinstance(src, int):
+        return src
+    if isinstance(src, str):
+        return int(src)
+
+
 def x1y1x2y2_to_xywh(det):
     x1, y1, x2, y2 = det
     w, h = int(x2) - int(x1), int(y2) - int(y1)
-    x1 ,y1 = int(x1), int(y1)
+    x1, y1 = int(x1), int(y1)
     return [x1, y1, w, h]
 
 
