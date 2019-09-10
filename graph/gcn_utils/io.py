@@ -118,6 +118,9 @@ class IO():
         parser.add_argument('--ignore_weights', type=str, default=[], nargs='+', help='the name of weights which will be ignored in the initialization')
 
         parser.add_argument("--video", type=str, help="io video")
+        parser.add_argument('--outdir', dest='outputpath', help='output-directory', default="examples/res/")
+        parser.add_argument('--save_video', dest='save_video', help='whether to save rendered video', default=False,
+                            action='store_true')
         #endregion yapf: enable
 
         return parser

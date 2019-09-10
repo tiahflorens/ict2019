@@ -50,7 +50,7 @@ class SGCN_Processor(Processor):
 
     def load_model(self):
         self.model = self.io.load_model(self.arg.model,
-                                        **(self.arg.model_args))
+**(self.arg.model_args))
         self.model.apply(weights_init)
         self.loss = ContrastiveLoss(margin=1)
 

@@ -112,8 +112,7 @@ parser.add_argument('--list', dest='inputlist',
                     help='image-list', default="")
 parser.add_argument('--mode', dest='mode',
                     help='detection mode, fast/normal/accurate', default="normal")
-parser.add_argument('--outdir', dest='outputpath',
-                    help='output-directory', default="examples/res/")
+parser.add_argument('--outdir', dest='outputpath',help='output-directory', default="examples/res/")
 parser.add_argument('--inp_dim', dest='inp_dim', type=str, default='608',
                     help='inpdim')
 parser.add_argument('--conf', dest='confidence', type=float, default=0.05,
@@ -136,8 +135,7 @@ parser.add_argument('--posebatch', type=int, default=80, help='pose estimation m
 parser.add_argument('--video', dest='video',help='video-name', default="/home/peter/dataset/gist/org/mid2019/roaming_kdh_trial_1/trim_student1.avi")
 parser.add_argument('--webcam', dest='webcam', type=str,
                     help='webcam number', default='0')
-parser.add_argument('--save_video', dest='save_video',
-                    help='whether to save rendered video', default=False, action='store_true')
+parser.add_argument('--save_video', dest='save_video',help='whether to save rendered video', default=False, action='store_true')
 parser.add_argument('--vis_fast', dest='vis_fast',
                     help='use fast rendering', action='store_true', default=False)
 opt = parser.parse_args()

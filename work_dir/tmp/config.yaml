@@ -1,4 +1,4 @@
-# command line: /home/peter/workspace/ict2019/video_demo.py --video /home/peter/dataset/gist/org/mid2018/nexpa_fight1.mp4
+# command line: video_demo.py --video /home/peter/dataset/gist/org/mid2019/roaming_kym_trial1/student4.avi --outdir /home/peter/tmp/bbox_test --save_video
 
 config: graph/config/inference.yaml
 device:
@@ -12,9 +12,11 @@ model_args:
         strategy: spatial
     in_channels: 2
     num_class: 128
+outputpath: /home/peter/tmp/bbox_test
 print_log: true
 save_log: true
+save_video: true
 use_gpu: true
-video: /home/peter/dataset/gist/org/mid2018/nexpa_fight1.mp4
+video: /home/peter/dataset/gist/org/mid2019/roaming_kym_trial1/student4.avi
 weights: ./weights/GCN/epoch210_model.pt
 work_dir: ./work_dir/tmp

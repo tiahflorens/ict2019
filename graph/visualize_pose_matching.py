@@ -293,8 +293,8 @@ def graph_pair_to_data(sample_graph_pair):
     return data_numpy_pair[0], data_numpy_pair[1]
 
 
-global pose_matcher
-pose_matcher = Pose_Matcher()
+# global pose_matcher
+# pose_matcher = Pose_Matcher()
 def pose_matching(graph_A_data, graph_B_data):
     flag_match, dist = pose_matcher.inference(graph_A_data, graph_B_data)
     return flag_match, dist

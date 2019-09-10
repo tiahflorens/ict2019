@@ -38,22 +38,83 @@ UPPER = 'upper'
 LOWER = 'lower'
 MEAN = 'mean'
 
-
-GTA_HISTORY='gta_history'
-MOVE_HISTORY='mv_history'
-CAR_TRACKLET='car_tracklet'
+GTA_HISTORY = 'gta_history'
+MOVE_HISTORY = 'mv_history'
+CAR_TRACKLET = 'car_tracklet'
 
 fourcc_avi = cv2.VideoWriter_fourcc('D', 'I', 'V', 'X')
 
+import argparse
+import torch
+
+import sys, os
+import cv2
+
+sys.path.append(os.path.abspath("../"))
+sys.path.append(os.path.abspath("utils"))
+sys.path.append(os.path.abspath("visualizer"))
+sys.path.append(os.path.abspath("graph"))
+
+# from utils_json import *
+# from utils_io_folder import *
+
+# from keypoint_visualizer import *
+# from detection_visualizer import *
+
+# ----------------------------------------------------
+from gcn_utils.io import IO
+from gcn_utils.gcn_model import Model
+from gcn_utils.processor_siamese_gcn import SGCN_Processor
+import torchlight
 
 
+# class Pose_Matcher(IO):
+class Pose_Matcher(SGCN_Processor):
+    def __init__(self, argv=None):
+        self.load_arg(argv)
+        self.init_environment()
+        self.load_model()
+        self.load_weights()
+        self.gpu()
+        return
 
+    @staticmethod
+    def get_parser(add_help=False):
+        parent_parser = IO.get_parser(add_help=False)
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            parents=[parent_parser],
+            description='Graph Convolution Network for Pose Matching')
+        # parser.set_defaults(config='config/inference.yaml')
+        parser.set_defaults(config='graph/config/inference.yaml')
+        return parser
 
+    def inference(self, data_1, data_2):
+        self.model.eval()
 
+        with torch.no_grad():
+            data_1 = torch.from_numpy(data_1)
+            data_1 = data_1.unsqueeze(0)
+            data_1 = data_1.float().to(self.dev)
 
-from pose_match import Pose_Matcher
-global pose_matcher
-# pose_matcher = Pose_Matcher()
+            data_2 = torch.from_numpy(data_2)
+            data_2 = data_2.unsqueeze(0)
+            data_2 = data_2.float().to(self.dev)
+
+            feature_1, feature_2 = self.model.forward(data_1, data_2)
+
+        # euclidian distance
+        diff = feature_1 - feature_2
+        dist_sq = torch.sum(pow(diff, 2), 1)
+        dist = torch.sqrt(dist_sq)
+
+        margin = 0.2
+        distance = dist.data.cpu().numpy()[0]
+        print("_____ Pose Matching: [dist: {:04.2f}]".format(distance))
+        if dist >= margin:
+            return False, distance  # Do not match
+        else:
+            return True, distance  # Match
 
 
 def int2round(src):
@@ -154,6 +215,9 @@ def keypoints_to_graph(keypoints, bbox):
     return graph, flag_pass_check
 
 
+# global pose_matcher
+pose_matcher = Pose_Matcher()
+
 def pose_matching(graph_A_data, graph_B_data):
     flag_match, dist = pose_matcher.inference(graph_A_data, graph_B_data)
     return flag_match, dist
@@ -186,11 +250,11 @@ def get_pose_matching_score(keypoints_A, keypoints_B, bbox_A, bbox_B):
     data_A = graph_pair_to_data2(graph_A)
     data_B = graph_pair_to_data2(graph_B)
 
-
     start = time.time()
     flag_match, dist = pose_matching(data_A, data_B)
     end = time.time()
     return dist
+
 
 def graph_pair_to_data2(graph):
     graph = np.transpose(graph, [1, 0])
@@ -203,11 +267,11 @@ def graph_pair_to_data(sample_graph_pair):
     data_numpy_pair = []
     for siamese_id in range(2):
         # fill data_numpy
-        data_numpy = np.zeros((2, 1, 15, 1)) # ( xy, 1 , 15 , 1 )
+        data_numpy = np.zeros((2, 1, 15, 1))  # ( xy, 1 , 15 , 1 )
 
         pose = sample_graph_pair[:][siamese_id]
-        data_numpy[0, 0, :, 0] = [x[0] for x in pose] # x-cord
-        data_numpy[1, 0, :, 0] = [x[1] for x in pose] # y-cord
+        data_numpy[0, 0, :, 0] = [x[0] for x in pose]  # x-cord
+        data_numpy[1, 0, :, 0] = [x[1] for x in pose]  # y-cord
         data_numpy_pair.append(data_numpy)
     return data_numpy_pair[0], data_numpy_pair[1]
 
@@ -236,7 +300,7 @@ def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
             continue
         pose_matching_score = get_pose_matching_score(keypoints_cur_frame, keypoints_prev_frame, bbox_cur_frame,
                                                       bbox_prev_frame)
-        print('[pse ,atcjomg score' , pose_matching_score)
+        print('[pse ,atcjomg score', pose_matching_score)
 
         if pose_matching_score <= pose_matching_threshold and pose_matching_score <= min_matching_score:
             # match the target based on the pose matching score
