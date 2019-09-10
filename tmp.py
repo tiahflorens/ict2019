@@ -1,6 +1,44 @@
-import os
-import cv2
 import sys
+import os
+sys.path.append(os.path.abspath("../"))
+sys.path.append(os.path.abspath("utils"))
+sys.path.append(os.path.abspath("visualizer"))
+sys.path.append(os.path.abspath("graph"))
+
+import cv2
+from opt import opt
+import torch.utils.data as data
+from gcn_utils.io import IO
+from gcn_utils.gcn_model import Model
+from gcn_utils.processor_siamese_gcn import SGCN_Processor
+import torchlight
+
+
+
+UPPER = 'upper'
+LOWER = 'lower'
+MEAN = 'mean'
+
+GTA_HISTORY = 'gta_history'
+MOVE_HISTORY = 'mv_history'
+CAR_TRACKLET = 'car_tracklet'
+
+fourcc_avi = cv2.VideoWriter_fourcc('D', 'I', 'V', 'X')
+
+import argparse
+import torch
+
+import sys, os
+import cv2
+
+
+# from utils_json import *
+# from utils_io_folder import *
+
+# from keypoint_visualizer import *
+# from detection_visualizer import *
+
+# ----------------------------------------------------
 
 RED = (0, 0, 255)
 GREEN = (0, 255, 0)
@@ -33,39 +71,6 @@ FONT_THINKESS = 1
 FRAME_COUNT_LOC = (30, 50)
 FRAME_DIST_LOC = (990, 50)
 FRAME_STATUS_LOC = (410, 50)
-
-UPPER = 'upper'
-LOWER = 'lower'
-MEAN = 'mean'
-
-GTA_HISTORY = 'gta_history'
-MOVE_HISTORY = 'mv_history'
-CAR_TRACKLET = 'car_tracklet'
-
-fourcc_avi = cv2.VideoWriter_fourcc('D', 'I', 'V', 'X')
-
-import argparse
-import torch
-
-import sys, os
-import cv2
-
-sys.path.append(os.path.abspath("../"))
-sys.path.append(os.path.abspath("utils"))
-sys.path.append(os.path.abspath("visualizer"))
-sys.path.append(os.path.abspath("graph"))
-
-# from utils_json import *
-# from utils_io_folder import *
-
-# from keypoint_visualizer import *
-# from detection_visualizer import *
-
-# ----------------------------------------------------
-from gcn_utils.io import IO
-from gcn_utils.gcn_model import Model
-from gcn_utils.processor_siamese_gcn import SGCN_Processor
-import torchlight
 
 
 # class Pose_Matcher(IO):
@@ -115,6 +120,10 @@ class Pose_Matcher(SGCN_Processor):
             return False, distance  # Do not match
         else:
             return True, distance  # Match
+
+
+global pose_matcher
+pose_matcher = Pose_Matcher()
 
 
 def int2round(src):
@@ -214,9 +223,6 @@ def keypoints_to_graph(keypoints, bbox):
         graph[id] = (int(x), int(y))
     return graph, flag_pass_check
 
-
-# global pose_matcher
-pose_matcher = Pose_Matcher()
 
 def pose_matching(graph_A_data, graph_B_data):
     flag_match, dist = pose_matcher.inference(graph_A_data, graph_B_data)
@@ -433,20 +439,6 @@ def non_max_suppression_fast(boxes, overlapThresh):
     return boxes[pick]
 
 
-def frame_indexing(frame, idx):
-    cv2.putText(frame, 'idx ' + str(idx), FRAME_COUNT_LOC, FONT_FACE, FONT_SCALE, WHITE, THICKNESS)  # frame
-
-
-def text_filled(frame, p1, label, color):
-    txt_size, baseLine1 = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, FONT_SCALE, FONT_THINKESS)
-    p1_ = (p1[0], p1[1])
-    p2 = (p1[0] + txt_size[0], p1[1] - txt_size[1])
-    # p1_ = (p1[0] - 10, p1[1] + 10)
-    # p2 = (p1[0] + txt_size[0] + 10, p1[1] - txt_size[1] - 10)
-    cv2.rectangle(frame, p1_, p2, color, -1)
-    cv2.putText(frame, label, p1, cv2.FONT_HERSHEY_DUPLEX, FONT_SCALE, WHITE, FONT_THINKESS)  # point is left-bottom
-
-
 def iou(boxA, boxB):
     # box: (x1, y1, x2, y2)
     # determine the (x, y)-coordinates of the intersection rectangle
@@ -528,4 +520,49 @@ def bbox_from_keypoints(keys):
 
     return (x_min, y_min, x_max, y_max)
 
+
 # bbox_from_keypoints(3)
+
+def frame_indexing(frame, idx):
+    cv2.putText(frame, 'idx ' + str(idx), FRAME_COUNT_LOC, FONT_FACE, FONT_SCALE, WHITE, FONT_THINKESS)  # frame
+
+
+def text_filled(frame, p1, label, color):
+    txt_size, baseLine1 = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, FONT_SCALE, FONT_THINKESS)
+    p1_ = (p1[0], p1[1])
+    p2 = (p1[0] + txt_size[0], p1[1] - txt_size[1])
+    # p1_ = (p1[0] - 10, p1[1] + 10)
+    # p2 = (p1[0] + txt_size[0] + 10, p1[1] - txt_size[1] - 10)
+    cv2.rectangle(frame, p1_, p2, color, -1)
+    cv2.putText(frame, label, p1, cv2.FONT_HERSHEY_DUPLEX, FONT_SCALE, WHITE, FONT_THINKESS)  # point is left-bottom
+
+
+class Mscoco(data.Dataset):
+    def __init__(self, train=True, sigma=1,
+                 scale_factor=(0.2, 0.3), rot_factor=40, label_type='Gaussian'):
+        self.img_folder = '../data/coco/images'  # root image folders
+        self.is_train = train  # training set or test set
+        self.inputResH = opt.inputResH
+        self.inputResW = opt.inputResW
+        self.outputResH = opt.outputResH
+        self.outputResW = opt.outputResW
+        self.sigma = sigma
+        self.scale_factor = scale_factor
+        self.rot_factor = rot_factor
+        self.label_type = label_type
+
+        self.nJoints_coco = 17
+        self.nJoints_mpii = 16
+        self.nJoints = 33
+
+        self.accIdxs = (1, 2, 3, 4, 5, 6, 7, 8,
+                        9, 10, 11, 12, 13, 14, 15, 16, 17)
+        self.flipRef = ((2, 3), (4, 5), (6, 7),
+                        (8, 9), (10, 11), (12, 13),
+                        (14, 15), (16, 17))
+
+    def __getitem__(self, index):
+        pass
+
+    def __len__(self):
+        pass

@@ -8,7 +8,7 @@ import cv2
 from tqdm import tqdm
 
 from SPPE.src.main_fast_inference import *
-from dataloader import VideoLoader, DetectionLoader, DetectionProcessor, DataWriter, Mscoco
+from dataloader import VideoLoader, DetectionLoader, DetectionProcessor, Mscoco, DataWriter
 from fn import getTime
 from opt import opt
 from pPose_nms import write_json
@@ -44,6 +44,8 @@ if __name__ == "__main__":
         pose_model = InferenNet_fast(4 * 1 + 1, pose_dataset)
     else:
         pose_model = InferenNet(4 * 1 + 1, pose_dataset)
+
+    print('InferNet')
     pose_model.cuda()
     pose_model.eval()
 
@@ -67,7 +69,7 @@ if __name__ == "__main__":
                 break
             if boxes is None or boxes.nelement() == 0:
                 # writer.save(None, None, None, None, None, orig_img, im_name.split('/')[-1] ,CAR)
-                writer.save(None, None, None, None, None, orig_img, im_name ,CAR)
+                writer.save(None, None, None, None, None, orig_img, im_name, CAR)
                 continue
 
             ckpt_time, det_time = getTime(start_time)
@@ -95,6 +97,7 @@ if __name__ == "__main__":
             ckpt_time, post_time = getTime(ckpt_time)
             runtime_profile['pn'].append(post_time)
 
+        time.sleep(1)
         if args.profile:
             # TQDM
             im_names_desc.set_description(

@@ -28,6 +28,7 @@ class Processor(IO):
         self.load_arg(argv)
         self.init_environment()
         self.load_model()
+        print('Processor_base.py init()')
         self.load_weights()
         self.gpu()
         self.load_data()

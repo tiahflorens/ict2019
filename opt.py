@@ -17,8 +17,7 @@ parser.add_argument('--snapshot', default=1, type=int,
 "----------------------------- AlphaPose options -----------------------------"
 parser.add_argument('--addDPG', default=False, type=bool,
                     help='Train with data augmentation')
-parser.add_argument('--sp', default=False, action='store_true',
-                    help='Use single process for pytorch')
+parser.add_argument('--sp', default=False, action='store_true',help='Use single process for pytorch')
 parser.add_argument('--profile', default=False, action='store_true',
                     help='add speed profiling at screen output')
 

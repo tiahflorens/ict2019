@@ -824,7 +824,7 @@ class DataWriter:
                         car_bbox_det_dict = car_dest_list[det_id]
                         # assert (det_id == bbox_det_dict["det_id"])
                         # assert (det_id == keypoints_dict["det_id"])
-                        # print(car_bbox_det_dict["track_id"])
+                        # print(Pose_matchercar_bbox_det_dict["track_id"])
                         if car_bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
                             car_bbox_det_dict["track_id"] = car_next_id
                             car_next_id += 1

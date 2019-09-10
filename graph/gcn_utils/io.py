@@ -29,6 +29,7 @@ class IO():
         self.load_arg(argv)
         self.init_environment()
         self.load_model()
+        print('IO Class Load weight')
         self.load_weights()
         self.gpu()
 
@@ -75,8 +76,7 @@ class IO():
 
     def load_weights(self):
         if self.arg.weights:
-            self.model = self.io.load_weights(self.model, self.arg.weights,
-                                              self.arg.ignore_weights)
+            self.model = self.io.load_weights(self.model, self.arg.weights, self.arg.ignore_weights)
 
     def gpu(self):
         # move modules to gpu
@@ -121,6 +121,8 @@ class IO():
         parser.add_argument('--outdir', dest='outputpath', help='output-directory', default="examples/res/")
         parser.add_argument('--save_video', dest='save_video', help='whether to save rendered video', default=False,
                             action='store_true')
+
+        parser.add_argument('--sp', default=False, action='store_true', help='Use single process for pytorch')
         #endregion yapf: enable
 
         return parser
