@@ -18,8 +18,7 @@ parser.add_argument('--snapshot', default=1, type=int,
 parser.add_argument('--addDPG', default=False, type=bool,
                     help='Train with data augmentation')
 parser.add_argument('--sp', default=False, action='store_true',help='Use single process for pytorch')
-parser.add_argument('--profile', default=False, action='store_true',
-                    help='add speed profiling at screen output')
+parser.add_argument('--profile', default=False, action='store_true',help='add speed profiling at screen output')
 
 "----------------------------- Model options -----------------------------"
 parser.add_argument('--netType', default='hgPRM', type=str,
@@ -120,8 +119,7 @@ parser.add_argument('--nms', dest='nms_thesh', type=float, default=0.6,
                     help='bounding box nms threshold')
 parser.add_argument('--save_img', default=False, action='store_true',
                     help='save result as image')
-parser.add_argument('--vis', default=False, action='store_true',
-                    help='visualize image')
+parser.add_argument('--vis', default=False, action='store_true',help='visualize image')
 parser.add_argument('--matching', default=False, action='store_true',
                     help='use best matching')
 parser.add_argument('--format', type=str,

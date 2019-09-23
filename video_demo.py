@@ -97,7 +97,6 @@ if __name__ == "__main__":
             ckpt_time, post_time = getTime(ckpt_time)
             runtime_profile['pn'].append(post_time)
 
-        time.sleep(1)
         if args.profile:
             # TQDM
             im_names_desc.set_description(

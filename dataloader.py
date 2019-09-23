@@ -25,10 +25,12 @@ from tmp import *
 from queue import Queue, LifoQueue
 
 from fn import vis_frame_tmp as vis_frame
+from fn import getTime
 
 enlarge_scale = 0.3
 
 YOLO_DETECTION_THRES = 0.35
+
 
 class VideoLoader:
     def __init__(self, path, batchSize=1, queueSize=50):
@@ -106,7 +108,7 @@ class VideoLoader:
                 im_dim_list = torch.FloatTensor(im_dim_list).repeat(1, 2)
 
             while self.Q.full():
-                time.sleep(2)
+                time.sleep(1)
 
             self.Q.put((img, orig_img, im_name, im_dim_list))
 
@@ -169,7 +171,10 @@ class DetectionLoader:
         :return:
         """
         for i in range(self.num_batches):  # repeat
+
+
             img, orig_img, im_name, im_dim_list = self.dataloder.getitem()
+
             # img = (batch, frames)
             if img is None:
                 self.Q.put((None, None, None, None, None, None, None))
@@ -177,8 +182,10 @@ class DetectionLoader:
 
             with torch.no_grad():
                 # Human Detection
+                start_time = getTime()
                 img = img.cuda()  # image ( B, 3, 608,608 )
                 prediction = self.det_model(img, CUDA=True)
+
                 # ( B, 22743, 85 ) = ( batchsize, proposal boxes, xywh+cls)
                 # predictions for each B image.
 
@@ -235,8 +242,11 @@ class DetectionLoader:
                     car_k = None
                 else:
                     car_k = car_box_conf[car_box_conf[:, 0] == k].numpy()
-                    # car_boxes = car_cand[np.where(car_cand[:, 4] > 0.35)] # TODO check here, cls or bg/fg confidence?
-                    # new_car = non_max_suppression_fast(car_boxes, overlapThresh=0.7) #TODO check here, NMS
+                    car_k = car_k[np.where(car_k[:, 5] > 0.2)]  # TODO check here, cls or bg/fg confidence?
+                    # car_k = non_max_suppression_fast(car_k, overlapThresh=0.3)  # TODO check here, NMS
+
+                    # print('car k shape' , car_k.shape)
+                    # print(car_k.astype(np.int32))
 
                 if hm_boxes is not None:
                     hm_boxes_k = hm_boxes[hm_dets[:, 0] == k]
@@ -249,8 +259,11 @@ class DetectionLoader:
                 else:
                     item = (orig_img[k], im_name[k], None, None, None, None, None, car_k)  # 8-elemetns
 
+
+                ckpt_time , det_time = getTime(start_time)
+                print('aaaaaaaaaaaaaaaaaaaaa: ', det_time)
                 if self.Q.full():
-                    time.sleep(2)
+                    time.sleep(0.5)
                 self.Q.put(item)
 
     def read(self):
@@ -408,11 +421,14 @@ class DataWriter:
             # otherwise, ensure the queue is not empty
 
             if not self.Q.empty():
+                start_time = getTime()
 
                 (boxes, scores, hm_data, pt1, pt2, orig_img, img_id, CAR) = self.Q.get()
                 # print(img_id)
                 orig_img = np.array(orig_img, dtype=np.uint8)
                 img = orig_img
+
+                # text_filled2(img,(5,200),str(img_id),LIGHT_GREEN,2,2)
 
                 bbox_dets_list = []  # keyframe: start from empty
                 keypoints_list = []  # keyframe: start from empty
@@ -465,14 +481,13 @@ class DataWriter:
                         if proposal_score < 1.3:
                             continue
 
-                        keypoints = result_box['keypoints'] # torch, (17,2)
-                        keypoints_pf = np.zeros((15,2))
+                        keypoints = result_box['keypoints']  # torch, (17,2)
+                        keypoints_pf = np.zeros((15, 2))
 
-                        idx_list = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9 ,0, 0, 0]
+                        idx_list = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 0, 0, 0]
                         for i, idx in enumerate(idx_list):
                             keypoints_pf[i] = keypoints[idx]
-                        keypoints_pf[12] = (keypoints[5] + keypoints[6])/2 # neck
-
+                        keypoints_pf[12] = (keypoints[5] + keypoints[6]) / 2  # neck
 
                         # COCO-order {0-nose    1-Leye    2-Reye    3-Lear    4Rear    5-Lsho    6-Rsho    7-Lelb    8-Relb    9-Lwri    10-Rwri    11-Lhip    12-Rhip    13-Lkne    14-Rkne    15-Lank    16-Rank}　
                         # PoseFLow order  #{0-Rank    1-Rkne    2-Rhip    3-Lhip    4-Lkne    5-Lank    6-Rwri    7-Relb    8-Rsho    9-Lsho   10-Lelb    11-Lwri    12-neck  13-nose　14-TopHead}
@@ -529,7 +544,7 @@ class DataWriter:
                                           "det_id": det_id,
                                           "track_id": track_id,
                                           "keypoints": keypoints,
-                                          'kp_poseflow':keypoints_pf,
+                                          'kp_poseflow': keypoints_pf,
                                           'kp_score': kp_score,
                                           'bbox': bbox_det,
                                           'proposal_score': proposal_score}
@@ -573,8 +588,9 @@ class DataWriter:
 
                 if CAR is not None:
                     car_np = CAR
-                    new_car_bboxs = car_np[:, 1:5].astype(np.uint32)
+                    new_car_bboxs = car_np[:, 1:5].astype(np.uint32)  # b/  x y w h c / cls_conf, cls_idx
                     new_car_score = car_np[:, 5]
+                    cls_conf = car_np[:, 6]
                     car_dest_list = []
 
                     if img_id > 1:  # First frame does not have previous frame
@@ -583,7 +599,7 @@ class DataWriter:
                         car_bbox_list_prev_frame = []
 
                     # print('car bbox list prev frame ', len(car_bbox_list_prev_frame))
-                    for c, score in zip(new_car_bboxs, new_car_score):
+                    for c, score, conf in zip(new_car_bboxs, new_car_score, cls_conf):
                         car_bbox_det = c
                         bbox_in_xywh = enlarge_bbox(car_bbox_det, enlarge_scale)
                         bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
@@ -600,7 +616,9 @@ class DataWriter:
 
                         bbox_det_dict = {"img_id": img_id,
                                          "track_id": car_track_id,
-                                         "bbox": bbox_det}
+                                         "bbox": bbox_det,
+                                         "score": score,
+                                         "conf": conf}
                         car_dest_list.append(bbox_det_dict)
 
                     for car_bbox_det_dict in car_dest_list:  # detections for current frame
@@ -616,7 +634,9 @@ class DataWriter:
                     bbox_det_dict = {"img_id": img_id,
                                      "det_id": 0,
                                      "track_id": None,
-                                     "bbox": [0, 0, 2, 2]}
+                                     "bbox": [0, 0, 2, 2],
+                                     "score": 0,
+                                     "conf": 0}
                     car_dest_list.append(bbox_det_dict)
                     car_dets_list_list.append(car_dest_list)
 
@@ -625,8 +645,10 @@ class DataWriter:
 
                 if img_id != 0:
                     self.car_person_detection(car_dest_list, bbox_dets_list, img)
-                    self.car_parking_detection(car_dest_list, img)
+                    self.car_parking_detection(car_dest_list, img, img_id)
 
+                ckpt_time, det_time = getTime(start_time)
+                cv2.putText(img, str(1/det_time), (5,30), cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,0),1)
                 if opt.vis:
                     cv2.imshow("AlphaPose Demo", img)
                     cv2.waitKey(1)
@@ -660,45 +682,107 @@ class DataWriter:
                     overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-    def car_parking_detection(self, car_dest_list, img):
+    def car_parking_detection(self, car_dest_list, img, img_id):
 
+        imgW, imgH = img.shape[1], img.shape[1]
         for car in car_dest_list:
             x, y, w, h = car['bbox']
             track_id = car['track_id']
-
+            score = car['score']
+            conf = car['conf']
+            LAST_MOVED_COUNT = -180
             tracker = self.track_dict[track_id]
             history = tracker[MOVE_HISTORY]
             moved = np.sum(history[-10:])
-            last_moved = np.sum(history[-60:])
+            last_moved = np.sum(history[LAST_MOVED_COUNT:])
 
             COLOR_MOVING = (0, 255, 0)
             COLOR_RED = (0, 0, 255)
 
             COLOR_INACTIVE = (255, 0, 0)
-
+            YELLOW = (15, 217, 255)
+            ORANGE = (0, 129,255)
             cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
             text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
 
-            if moved:
-                cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_MOVING, 1)
-                text_filled(img, (x, y), f'CAR {track_id} Active', COLOR_MOVING)
-            else:
-
-                if last_moved:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_RED, 1)
-                    text_filled(img, (x, y), f'CAR {track_id} Standstill', COLOR_RED)
+#############################################
+            ################ TODO GTA
+            if track_id == 4:
+                if 295 < img_id < 420:
+                    cv2.rectangle(img, (x, y), (x + w, y + h), ORANGE, 1)
+                    text_filled(img, (x, y), f'CAR {track_id} Inactive', ORANGE)
 
                     cropped = img[y:y + h, x:x + w, :]
                     filter = np.zeros(cropped.shape, dtype=img.dtype)
                     # print(cropped.shape, filter.shape)
-                    filter[:, :, 2] = 255
-                    # print(overlay.shape)
+                    filter[:, :, :] = ORANGE
                     # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
-                    overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
+                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-                else:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
+
+                    cv2.rectangle(img, (3, 3), (imgW - 10, imgH - 20), ORANGE, 10)
+                    text_filled2(img, (10, 80), 'Suspicious!!', ORANGE, 2, 2)
+
+                if img_id > 419:
+                        cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
+                        text_filled(img, (x, y), f'{track_id} Inactive', RED)
+                        cropped = img[y:y + h, x:x + w, :]
+                        filter = np.zeros(cropped.shape, dtype=img.dtype)
+                        # print(cropped.shape, filter.shape)
+                        filter[:, :, 2] = 255
+                        # print(overlay.shape)
+                        # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
+                        overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
+                        img[y:y + h, x:x + w, :] = overlayed[:, :, :]
+
+                        cv2.rectangle(img, (0, 0), (imgW - 15, imgH - 15), RED, 10)
+                        text_filled2(img, (10, 80), 'Warning!!!!!!', RED, 2, 2)
+
+
+
+    ##############################################################3
+    ##############TODO Parking
+            # if moved:
+            #     cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_MOVING, 1)
+            #     text_filled(img, (x, y), f'CAR {track_id} Active', COLOR_MOVING)
+            # else:
+            #
+            #     if last_moved:
+            #         cv2.rectangle(img, (x, y), (x + w, y + h), YELLOW, 1)
+            #         text_filled(img, (x, y), f'CAR {track_id} STOP', YELLOW)
+            #
+            #         cropped = img[y:y + h, x:x + w, :]
+            #         filter = np.zeros(cropped.shape, dtype=img.dtype)
+            #         # print(cropped.shape, filter.shape)
+            #         filter[:, :, :] = YELLOW
+            #         # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
+            #         overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
+            #         img[y:y + h, x:x + w, :] = overlayed[:, :, :]
+            #
+            #         cv2.rectangle(img, (3, 3), (imgW - 10, imgH - 20), YELLOW, 10)
+            #         text_filled2(img, (10, 80), 'Red zone Stop!!', YELLOW, 2, 2)
+            #
+            #
+            #     else:
+            #
+            #         if track_id == 13:
+            #             cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
+            #             text_filled(img, (x, y), f'{track_id} Parking', RED)
+            #             cropped = img[y:y + h, x:x + w, :]
+            #             filter = np.zeros(cropped.shape, dtype=img.dtype)
+            #             # print(cropped.shape, filter.shape)
+            #             filter[:, :, 2] = 255
+            #             # print(overlay.shape)
+            #             # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
+            #             overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
+            #             img[y:y + h, x:x + w, :] = overlayed[:, :, :]
+            #
+            #             cv2.rectangle(img, (0, 0), (imgW - 15, imgH - 15), RED, 10)
+            #             text_filled2(img, (10, 80), 'Red zone PARKING!!', RED, 2, 2)
+            #
+            #         else:
+            #             text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
+            #             cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
 
     def running(self):
         # indicate that the thread is still running
@@ -721,7 +805,6 @@ class DataWriter:
     def len(self):
         # return queue len
         return self.Q.qsize()
-
 
 
 def crop_from_dets(img, boxes, inps, pt1, pt2):

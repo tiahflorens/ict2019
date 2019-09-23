@@ -93,6 +93,8 @@ parser.add_argument('--backend', dest='backend', type=str, default='gloo',
 parser.add_argument('--port', dest='port',
                     help='port of server')
 
+# parser.add_argument('--profile', default=False, action='store_true',help='add speed profiling at screen output')
+
 
 opt = parser.parse_args()
 if opt.Continue:

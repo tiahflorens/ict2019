@@ -537,6 +537,14 @@ def text_filled(frame, p1, label, color):
     cv2.putText(frame, label, p1, cv2.FONT_HERSHEY_DUPLEX, FONT_SCALE, WHITE, FONT_THINKESS)  # point is left-bottom
 
 
+def text_filled2(frame, p1, label, color,font_sacle, thickness):
+    txt_size, baseLine1 = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, font_sacle, thickness)
+    p1_ = (p1[0], p1[1] + baseLine1) # left-bottom
+    p2 = (p1[0] + txt_size[0], p1[1] - txt_size[1] ) # top_right
+    cv2.rectangle(frame, p1_, p2, color, -1)
+    cv2.putText(frame, label, p1, cv2.FONT_HERSHEY_DUPLEX, font_sacle, WHITE, thickness)  # point is left-bottom
+
+
 class Mscoco(data.Dataset):
     def __init__(self, train=True, sigma=1,
                  scale_factor=(0.2, 0.3), rot_factor=40, label_type='Gaussian'):

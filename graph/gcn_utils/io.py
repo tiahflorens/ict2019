@@ -123,6 +123,9 @@ class IO():
                             action='store_true')
 
         parser.add_argument('--sp', default=False, action='store_true', help='Use single process for pytorch')
+        parser.add_argument('--vis', default=False, action='store_true', help='visualize image')
+        parser.add_argument('--profile', default=False, action='store_true',help='add speed profiling at screen output')
+        parser.add_argument('--detbatch', type=int, default=1, help='detection batch size')
         #endregion yapf: enable
 
         return parser

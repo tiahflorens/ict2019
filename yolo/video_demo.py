@@ -78,6 +78,7 @@ def arg_parse():
     parser.add_argument("--reso", dest = 'reso', help = 
                         "Input resolution of the network. Increase to increase accuracy. Decrease to increase speed",
                         default = "416", type = str)
+    # parser.add_argument('--profile', default=False, action='store_true', help='add speed profiling at screen output')
     return parser.parse_args()
 
 
