@@ -1,5 +1,4 @@
 from opt import opt
-
 import ntpath
 import os
 import sys
@@ -8,10 +7,13 @@ import cv2
 from tqdm import tqdm
 
 from SPPE.src.main_fast_inference import *
-from dataloader import VideoLoader, DetectionLoader, DetectionProcessor, Mscoco, DataWriter
+from dataloader_light import VideoLoader, DetectionLoader, DetectionProcessor, Mscoco, DataWriter
 from fn import getTime
 from opt import opt
 from pPose_nms import write_json
+
+args = opt
+args.dataset = 'coco'
 
 args = opt
 args.dataset = 'coco'
@@ -21,8 +23,6 @@ if not args.sp:
 
 if __name__ == "__main__":
     videofile = args.video
-
-
     mode = args.mode
     if not os.path.exists(args.outputpath):
         os.mkdir(args.outputpath)
@@ -34,21 +34,17 @@ if __name__ == "__main__":
         videofile = '/home/peter/dataset/gist/org/mid2019/gta_jh_trial_1/trim_student1.mp4'
     elif videofile == '2':
         videofile = '/home/peter/dataset/gist/org/mid2019/gta_jh_trial_2/trim_ohryong1.mp4'
-    elif videofile == '3':
+    elif videofile =='3':
         videofile = '/home/peter/dataset/gist/org/mid2019/roaming_kdh_trial_1/trim_student1.mp4'
-    elif videofile == '4':
-        videofile ='/home/peter/dataset/gist/org/mid2018/nexpa_fight2.mp4'
-    elif videofile == '5':
-        videofile ='/home/peter/dataset/gist/org/mid2018/nexpa_vehicle_accident.mp4'
 
-    # Load input video
+# Load input video
     data_loader = VideoLoader(videofile, batchSize=args.detbatch).start()
     (fourcc, fps, frameSize) = data_loader.videoinfo()
 
     # Load detection loader
     print('Loading YOLO model..')
     sys.stdout.flush()
-    det_loader = DetectionLoader(data_loader, batchSize=args.detbatch).start()
+    det_loader = DetectionLoader(data_loader,videofile, batchSize=args.detbatch).start()
     det_processor = DetectionProcessor(det_loader).start()
 
     # Load pose model
@@ -69,7 +65,7 @@ if __name__ == "__main__":
     }
 
     # Data writer
-    save_path = os.path.join(args.outputpath, 'AlphaPose_' + ntpath.basename(videofile).split('.')[0] + '.avi')
+    save_path = os.path.join(args.outputpath, 'ict_' + os.path.basename(videofile).split('.')[0] + '.avi')
     writer = DataWriter(args.save_video, save_path, cv2.VideoWriter_fourcc(*'XVID'), fps, frameSize).start()
 
     im_names_desc = tqdm(range(data_loader.length()))
@@ -80,7 +76,7 @@ if __name__ == "__main__":
             (inps, orig_img, im_name, boxes, scores, pt1, pt2, CAR) = det_processor.read()
             if orig_img is None:
                 break
-            if boxes is None or boxes.nelement() == 0:
+            if boxes is None:
                 # writer.save(None, None, None, None, None, orig_img, im_name.split('/')[-1] ,CAR)
                 writer.save(None, None, None, None, None, orig_img, im_name, CAR)
                 continue
@@ -95,16 +91,20 @@ if __name__ == "__main__":
                 leftover = 1
             num_batches = datalen // batchSize + leftover
             hm = []
+
             for j in range(num_batches):
+
                 inps_j = inps[j * batchSize:min((j + 1) * batchSize, datalen)].cuda()
                 hm_j = pose_model(inps_j)
                 hm.append(hm_j)
+            # print('demo.py , hm list',inps_j.size() , '----------->', len(hm))
             hm = torch.cat(hm)
             ckpt_time, pose_time = getTime(ckpt_time)
             runtime_profile['pt'].append(pose_time)
 
             hm = hm.cpu().data
             # writer.save(boxes, scores, hm, pt1, pt2, orig_img, im_name.split('/')[-1], CAR)
+
             writer.save(boxes, scores, hm, pt1, pt2, orig_img, im_name, CAR)
 
             ckpt_time, post_time = getTime(ckpt_time)

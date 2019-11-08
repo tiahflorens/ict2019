@@ -126,6 +126,7 @@ class IO():
         parser.add_argument('--vis', default=False, action='store_true', help='visualize image')
         parser.add_argument('--profile', default=False, action='store_true',help='add speed profiling at screen output')
         parser.add_argument('--detbatch', type=int, default=1, help='detection batch size')
+        parser.add_argument('--nThreads', default=6, type=int, help='Number of data loading threads')
         #endregion yapf: enable
 
         return parser

@@ -31,6 +31,8 @@ enlarge_scale = 0.3
 
 YOLO_DETECTION_THRES = 0.35
 
+from tmp import get_bbox_list
+
 
 class VideoLoader:
     def __init__(self, path, batchSize=1, queueSize=50):
@@ -38,6 +40,7 @@ class VideoLoader:
         # used to indicate if the thread should be stopped or not
         self.path = path
         stream = cv2.VideoCapture(path)
+
         assert stream.isOpened(), 'Cannot capture source'
         self.fourcc = int(stream.get(cv2.CAP_PROP_FOURCC))
         self.fps = stream.get(cv2.CAP_PROP_FPS)
@@ -108,7 +111,7 @@ class VideoLoader:
                 im_dim_list = torch.FloatTensor(im_dim_list).repeat(1, 2)
 
             while self.Q.full():
-                time.sleep(1)
+                time.sleep(0.5)
 
             self.Q.put((img, orig_img, im_name, im_dim_list))
 
@@ -125,23 +128,17 @@ class VideoLoader:
 
 
 class DetectionLoader:
-    def __init__(self, dataloder, batchSize=1, queueSize=1024):
+    def __init__(self, dataloder, path, batchSize=1, queueSize=1024):
         # initialize the file video stream along with the boolean
         # used to indicate if the thread should be stopped or not
-        self.det_model = Darknet("yolo/cfg/yolov3-spp.cfg")
-        self.det_model.load_weights('models/yolo/yolov3-spp.weights')
-        self.det_model.net_info['height'] = opt.inp_dim
-        self.det_inp_dim = int(self.det_model.net_info['height'])
-        assert self.det_inp_dim % 32 == 0
-        assert self.det_inp_dim > 32
-        self.det_model.cuda()
-        self.det_model.eval()
 
+        self.txtpath = os.path.dirname(path) + '/' + os.path.basename(path).split('.')[0] + '.txt'
         self.stopped = False
         self.dataloder = dataloder
         self.batchSize = batchSize
         self.datalen = self.dataloder.length()
         leftover = 0
+
         if (self.datalen) % batchSize:
             leftover = 1
         self.num_batches = self.datalen // batchSize + leftover
@@ -170,6 +167,8 @@ class DetectionLoader:
 
         :return:
         """
+
+        car_list_list, hm_list_list = get_bbox_list(self.txtpath)
         for i in range(self.num_batches):  # repeat
 
             img, orig_img, im_name, im_dim_list = self.dataloder.getitem()
@@ -179,95 +178,47 @@ class DetectionLoader:
                 self.Q.put((None, None, None, None, None, None, None))
                 return
             start_time = getTime()
-            with torch.no_grad():
-                # Human Detection
-
-                img = img.cuda()  # image ( B, 3, 608,608 )
-                prediction = self.det_model(img, CUDA=True)
-
-                # ( B, 22743, 85 ) = ( batchsize, proposal boxes, xywh+cls)
-                # predictions for each B image.
-
-                # NMS process
-                carperson = dynamic_write_results(prediction, opt.confidence, opt.num_classes, nms=True,
-                                                  nms_conf=opt.nms_thesh)
-                if isinstance(carperson, int) or carperson.shape[0] == 0:
-                    for k in range(len(orig_img)):
-                        if self.Q.full():
-                            time.sleep(2)
-                        self.Q.put((orig_img[k], im_name[k], None, None, None, None, None, None))  # 8 elements
-                    continue
-
-                ckpt_time, det_time = getTime(start_time)
-
-                carperson = carperson.cpu()  # (1) k-th image , (7) x,y,w,h,c, cls_score, cls_index
-                im_dim_list = torch.index_select(im_dim_list, 0, carperson[:, 0].long())
-                scaling_factor = torch.min(self.det_inp_dim / im_dim_list, 1)[0].view(-1, 1)
-
-                # coordinate transfer
-                carperson[:, [1, 3]] -= (self.det_inp_dim - scaling_factor * im_dim_list[:, 0].view(-1, 1)) / 2
-                carperson[:, [2, 4]] -= (self.det_inp_dim - scaling_factor * im_dim_list[:, 1].view(-1, 1)) / 2
-
-                carperson[:, 1:5] /= scaling_factor
-                for j in range(carperson.shape[0]):
-                    carperson[j, [1, 3]] = torch.clamp(carperson[j, [1, 3]], 0.0, im_dim_list[j, 0])
-                    carperson[j, [2, 4]] = torch.clamp(carperson[j, [2, 4]], 0.0, im_dim_list[j, 1])
-
-                cls_car_mask = carperson * (carperson[:, -1] == 2).float().unsqueeze(1)  # car
-                class__car_mask_ind = torch.nonzero(cls_car_mask[:, -2]).squeeze()
-                car_dets = carperson[class__car_mask_ind].view(-1, 8)
-
-                cls_person_mask = carperson * (carperson[:, -1] == 0).float().unsqueeze(1)  # person
-                class__person_mask_ind = torch.nonzero(cls_person_mask[:, -2]).squeeze()
-                hm_dets = carperson[class__person_mask_ind].view(-1, 8)
-
-                ckpt_time, masking_time = getTime(ckpt_time)
-
-            hm_boxes, hm_scores = None, None
-            # print()
-            if hm_dets.size(0) > 0:
-                hm_boxes = hm_dets[:, 1:5]
-                hm_scores = hm_dets[:, 5:6]
-
-            car_box_conf = None
-            if car_dets.size(0) > 0:
-                car_box_conf = car_dets
+            # with torch.no_grad():
+            # Human Detection
+            # img = img.cuda()  # image ( B, 3, 608,608 )
 
             for k in range(len(orig_img)):  # for k-th image detection.
+
+                im_name_k = im_name[k]
+                car_list = car_list_list[im_name_k]
+                hm_list = hm_list_list[im_name_k]
+
+                if len(car_list) == 0:  # empty car
+                    car_list_np = None
+                else:
+                    car_list_np = np.array(car_list)
+
+                if len(hm_list):  # human not empty
+
+                    # bbox [idx, cls, x, y, w, h, c]
+
+                    hm_list_np = np.array(hm_list)
+                    hm_boxes_k = hm_list_np[:, 0:4]
+
+                    hm_scores_k = hm_list_np[:, 4]
+
+                    size = hm_boxes_k.shape[0]
+                    inps = torch.zeros(size, 3, opt.inputResH, opt.inputResW)
+                    pt1 = torch.zeros(size, 2)
+                    pt2 = torch.zeros(size, 2)
+                    item = (orig_img[k], im_name[k], hm_boxes_k, hm_scores_k, inps, pt1, pt2, car_list_np)
+                else:
+                    item = (orig_img[k], im_name[k], None, None, None, None, None, car_list_np)  # 8-elemetns
+
+                if self.Q.full():
+                    time.sleep(0.3)
+                self.Q.put(item)
 
                 # print('--------------- car person', carperson.size())
                 # print('--------------- hm dets', hm_dets.size())
                 # print('--------------- class ind', class__person_mask_ind.size())
                 # print()
                 # car_cand = car_dets[car_dets[:, 0] == k]
-
-                if car_box_conf is None:
-                    car_k = None
-                else:
-                    car_k = car_box_conf[car_box_conf[:, 0] == k].numpy()
-                    car_k = car_k[np.where(car_k[:, 5] > 0.2)]  # TODO check here, cls or bg/fg confidence?
-                    # car_k = non_max_suppression_fast(car_k, overlapThresh=0.3)  # TODO check here, NMS
-
-                    # print('car k shape' , car_k.shape)
-                    # print(car_k.astype(np.int32))
-
-                if hm_boxes is not None:
-                    hm_boxes_k = hm_boxes[hm_dets[:, 0] == k]
-                    hm_scores_k = hm_scores[hm_dets[:, 0] == k]
-                    inps = torch.zeros(hm_boxes_k.size(0), 3, opt.inputResH, opt.inputResW)
-                    pt1 = torch.zeros(hm_boxes_k.size(0), 2)
-                    pt2 = torch.zeros(hm_boxes_k.size(0), 2)
-                    item = (orig_img[k], im_name[k], hm_boxes_k, hm_scores_k, inps, pt1, pt2, car_k)
-                    # print('video processor ', 'image' , im_name[k] , 'hm box ' , hm_boxes_k.size())
-                else:
-                    item = (orig_img[k], im_name[k], None, None, None, None, None, car_k)  # 8-elemetns
-
-                if self.Q.full():
-                    time.sleep(0.5)
-                self.Q.put(item)
-
-            ckpt_time, distribute_time = getTime(ckpt_time)
-            # print('aaaaaaaaaaaaaaaaaaaaa: ', round(det_time,3), round(masking_time,3), round(distribute_time,3))
 
     def read(self):
         # return next frame in the queue
@@ -316,15 +267,21 @@ class DetectionProcessor:
                     self.Q.put((None, None, None, None, None, None, None, None))
                     return
 
-                if boxes is None or boxes.nelement() == 0:
+                # if boxes is None or boxes.nelement() == 0:
+                if boxes is None:
 
                     while self.Q.full():
                         time.sleep(0.2)
                     self.Q.put((None, orig_img, im_name, boxes, scores, None, None, CAR))
                     continue
 
+                start_time = getTime()
                 inp = im_to_torch(cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB))
                 inps, pt1, pt2 = crop_from_dets(inp, boxes, inps, pt1, pt2)
+
+                # print(boxes, pt1,pt2)
+                ckpt_time, torch_time = getTime(start_time)
+                # print('torch time', round(torch_time, 3))
 
                 while self.Q.full():
                     time.sleep(0.2)
@@ -427,8 +384,11 @@ class DataWriter:
                 start_time = getTime()
 
                 (boxes, scores, hm_data, pt1, pt2, orig_img, img_id, CAR) = self.Q.get()
-                # print(img_id)
+
                 orig_img = np.array(orig_img, dtype=np.uint8)
+                if boxes is not None:
+                    boxes = boxes.astype(np.int32)
+
                 img = orig_img
 
                 # text_filled2(img,(5,200),str(img_id),LIGHT_GREEN,2,2)
@@ -462,6 +422,8 @@ class DataWriter:
                         preds_hm, preds_img, preds_scores = getPrediction(hm_data, pt1, pt2, opt.inputResH,
                                                                           opt.inputResW, opt.outputResH,
                                                                           opt.outputResW)
+
+                        # print('number of result', preds_hm,  preds_scores )
                         result = pose_nms(boxes, scores, preds_img, preds_scores)  # list type
                         # result = {  'keypoints': ,  'kp_score': , 'proposal_score': ,  'bbox' }
 
@@ -474,6 +436,11 @@ class DataWriter:
 
                     # boxes.size(0)
                     num_dets = len(result)
+
+                    for bbox in boxes:
+                        x, y, w, h = bbox.astype(np.uint32)
+                        cv2.rectangle(orig_img, (x, y), (x + w, y + h), (253, 222, 111), 1)
+
                     for det_id in range(num_dets):  # IOU tracking for detections in current frame.
                         # detections for current frame
                         # obtain bbox position and track id
@@ -497,12 +464,8 @@ class DataWriter:
 
                         bbox_det = bbox_from_keypoints(keypoints)  # xxyy
 
-                        # enlarge bbox by 20% with same center position
-                        # bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
-                        bbox_in_xywh = enlarge_bbox(bbox_det, enlarge_scale)
-                        # print('enlared', bbox_in_xywh)
-                        bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
-                        # print('converted', bbox_det)
+                        # bbox_in_xywh = enlarge_bbox(bbox_det, enlarge_scale)
+                        # bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
 
                         # Keyframe: use provided bbox
                         # if bbox_invalid(bbox_det):
@@ -583,6 +546,7 @@ class DataWriter:
                                 next_id += 1
 
                     # update frame
+                    # print('keypoint list', len(keypoints_list))
                     vis_frame(img, keypoints_list)
 
                 """
@@ -591,9 +555,12 @@ class DataWriter:
 
                 if CAR is not None:
                     car_np = CAR
-                    new_car_bboxs = car_np[:, 1:5].astype(np.uint32)  # b/  x y w h c / cls_conf, cls_idx
-                    new_car_score = car_np[:, 5]
-                    cls_conf = car_np[:, 6]
+                    new_car_bboxs = car_np[:, 0:4].astype(np.uint32)  # b/  x y w h c / cls_conf, cls_idx
+                    new_car_score = car_np[:, 4]
+                    cls_conf = car_np[:, 4]
+
+                    # print("id: ", img_id , " ------------ " , new_car_bboxs, new_car_score)
+                    # cls_conf = car_np[:, 6]
                     car_dest_list = []
 
                     if img_id > 1:  # First frame does not have previous frame
@@ -603,9 +570,11 @@ class DataWriter:
 
                     # print('car bbox list prev frame ', len(car_bbox_list_prev_frame))
                     for c, score, conf in zip(new_car_bboxs, new_car_score, cls_conf):
-                        car_bbox_det = c
-                        bbox_in_xywh = enlarge_bbox(car_bbox_det, enlarge_scale)
-                        bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+                        # car_bbox_det = c
+                        # car_bbox_det = x1y1x2y2_to_xywh(c)
+                        bbox_det = c
+                        # bbox_in_xywh = enlarge_bbox(car_bbox_det, enlarge_scale)
+                        # bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
 
                         if img_id == 0:  # First frame, all ids are assigned automatically
                             car_track_id = car_next_id
@@ -646,18 +615,12 @@ class DataWriter:
                 bbox_dets_list_list.append(bbox_dets_list)
                 keypoints_list_list.append(keypoints_list)
 
-
-                # FOR GIST2019
-                # if img_id != 0:
-                #     self.car_person_detection(car_dest_list, bbox_dets_list, img)
-                #     self.car_parking_detection(car_dest_list, img, img_id)
-
-                #FOR NEXPA
-                self.person_nexpa(bbox_dets_list,img,img_id)
+                if img_id != 0:
+                    self.car_person_detection(car_dest_list, bbox_dets_list, img)
+                    self.car_parking_detection(car_dest_list, img, img_id)
 
                 ckpt_time, det_time = getTime(start_time)
-                # cv2.putText(img, str(1 / det_time), (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 1)
-                cv2.putText(img, str(img_id), (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 1)
+                cv2.putText(img, str(1 / det_time), (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 1)
                 if opt.vis:
                     cv2.imshow("AlphaPose Demo", img)
                     cv2.waitKey(33)
@@ -691,37 +654,9 @@ class DataWriter:
                     overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-
-    def person_nexpa(self, hm_dets_list, img, img_id):
-
-        if 425 < img_id < 560:
-            size = 8
-            imgW, imgH = img.shape[1], img.shape[0]
-            for human in hm_dets_list:
-                human_track_id = human['track_id']
-                if human_track_id is None:
-                    continue
-                hum_bbox = human['bbox']
-                boxa = xywh_to_x1y1x2y2(hum_bbox)
-                x, y, w, h = x1y1x2y2_to_xywh(boxa)
-
-                if human_track_id < 3:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = RED
-                    overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-                if img_id % 10== 0:
-                    cv2.rectangle(img, (size, size), (imgW - size, imgH - size), RED, size)
-                text_filled2(img, (10, 80), 'Violence!!', RED, 1, 1)
-
-
-
     def car_parking_detection(self, car_dest_list, img, img_id):
 
-        imgW, imgH = img.shape[1], img.shape[0]
+        imgW, imgH = img.shape[1], img.shape[1]
         for car in car_dest_list:
             x, y, w, h = car['bbox']
             track_id = car['track_id']
@@ -739,95 +674,42 @@ class DataWriter:
             COLOR_INACTIVE = (255, 0, 0)
             YELLOW = (15, 217, 255)
             ORANGE = (0, 129, 255)
+            # print('car parking detction', x, y, w, h)
             cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
             text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
 
             #############################################
             ################ TODO GTA
-            caution_time = 16
-            suspicious_time= 8
-            warning_time =4
-            if 295 < img_id < 420:
-
-                if track_id == 4:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), YELLOW, 1)
-                    text_filled(img, (x, y), f'CAR {track_id} Inactive', YELLOW)
-
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = YELLOW
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-
-                if img_id%caution_time ==0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), YELLOW, 10)
-                text_filled2(img, (10, 80), 'Caution!!', YELLOW, 2, 2)
-
-            elif 420 < img_id < 740:
-                if track_id == 4:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), YELLOW, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', YELLOW)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    # print(cropped.shape, filter.shape)
-                    filter[:, :, :] = YELLOW
-                    # print(overlay.shape)
-
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-                if img_id % caution_time== 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), YELLOW, 10)
-                text_filled2(img, (10, 80), 'Caution!!', YELLOW, 2, 2)
-
-            elif 740 < img_id < 960:
-
-                if track_id == 4 or track_id == 3:
+            if track_id == 4:
+                if 295 < img_id < 420:
                     cv2.rectangle(img, (x, y), (x + w, y + h), ORANGE, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', ORANGE)
+                    text_filled(img, (x, y), f'CAR {track_id} Inactive', ORANGE)
+
                     cropped = img[y:y + h, x:x + w, :]
                     filter = np.zeros(cropped.shape, dtype=img.dtype)
                     # print(cropped.shape, filter.shape)
                     filter[:, :, :] = ORANGE
-                    # print(overlay.shape)
-
+                    # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
                     overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-                if img_id % suspicious_time == 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), ORANGE, 10)
-                text_filled2(img, (10, 80), 'Suspicious!!!!!!', ORANGE, 2, 2)
+                    cv2.rectangle(img, (3, 3), (imgW - 10, imgH - 20), ORANGE, 10)
+                    text_filled2(img, (10, 80), 'Suspicious!!', ORANGE, 2, 2)
 
-            elif 960 < img_id < 1450:
-                if track_id == 3:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), ORANGE, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', ORANGE)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = ORANGE
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-
-                if img_id % suspicious_time == 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), ORANGE, 10)
-                text_filled2(img, (10, 80), 'Suspicious!!!!!!', ORANGE, 2, 2)
-
-
-            elif 1450 < img_id:
-                if track_id == 3:
+                if img_id > 419:
                     cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
                     text_filled(img, (x, y), f'{track_id} Inactive', RED)
                     cropped = img[y:y + h, x:x + w, :]
                     filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = RED
+                    # print(cropped.shape, filter.shape)
+                    filter[:, :, 2] = 255
+                    # print(overlay.shape)
+                    # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
                     overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-                if img_id % warning_time == 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), RED, 10)
-                text_filled2(img, (10, 80), 'Warning!!!!!!', RED, 2, 2)
+                    cv2.rectangle(img, (0, 0), (imgW - 15, imgH - 15), RED, 10)
+                    text_filled2(img, (10, 80), 'Warning!!!!!!', RED, 2, 2)
 
     ##############################################################3
     ##############TODO Parking

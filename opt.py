@@ -7,8 +7,7 @@ parser.add_argument('--expID', default='default', type=str,
                     help='Experiment ID')
 parser.add_argument('--dataset', default='coco', type=str,
                     help='Dataset choice: mpii | coco')
-parser.add_argument('--nThreads', default=30, type=int,
-                    help='Number of data loading threads')
+parser.add_argument('--nThreads', default=6, type=int,help='Number of data loading threads')
 parser.add_argument('--debug', default=False, type=bool,
                     help='Print the debug information')
 parser.add_argument('--snapshot', default=1, type=int,
@@ -120,12 +119,11 @@ parser.add_argument('--nms', dest='nms_thesh', type=float, default=0.6,
 parser.add_argument('--save_img', default=False, action='store_true',
                     help='save result as image')
 parser.add_argument('--vis', default=False, action='store_true',help='visualize image')
-parser.add_argument('--matching', default=False, action='store_true',
-                    help='use best matching')
+parser.add_argument('--matching', default=False, action='store_true', help='use best matching')
 parser.add_argument('--format', type=str,
                     help='save in the format of cmu or coco or openpose, option: coco/cmu/open')
 parser.add_argument('--detbatch', type=int, default=1, help='detection batch size')
-parser.add_argument('--posebatch', type=int, default=80, help='pose estimation maximum batch size')
+parser.add_argument('--posebatch', type=int, default=1, help='pose estimation maximum batch size')
 
 "----------------------------- Video options -----------------------------"
 # parser.add_argument('--video', dest='video',help='video-name', default="/home/peter/dataset/gist/org/mid2018/nexpa_fight1.mp4")

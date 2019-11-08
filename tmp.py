@@ -1,5 +1,6 @@
 import sys
 import os
+
 sys.path.append(os.path.abspath("../"))
 sys.path.append(os.path.abspath("utils"))
 sys.path.append(os.path.abspath("visualizer"))
@@ -12,8 +13,6 @@ from gcn_utils.io import IO
 from gcn_utils.gcn_model import Model
 from gcn_utils.processor_siamese_gcn import SGCN_Processor
 import torchlight
-
-
 
 UPPER = 'upper'
 LOWER = 'lower'
@@ -30,7 +29,6 @@ import torch
 
 import sys, os
 import cv2
-
 
 # from utils_json import *
 # from utils_io_folder import *
@@ -71,6 +69,30 @@ FONT_THINKESS = 1
 FRAME_COUNT_LOC = (30, 50)
 FRAME_DIST_LOC = (990, 50)
 FRAME_STATUS_LOC = (410, 50)
+
+
+def get_bbox_list(txtpath):
+    txtfile = open(txtpath, 'r')
+    txt = txtfile.readlines()
+
+    N = int(txt[-1].split(' ')[0])
+    car_list_list = [[] for x in range(N + 1)]
+    hm_list_list = [[] for x in range(N + 1)]
+
+    for tx in txt:
+        txx = tx.split('\n')[0]
+        idx, cls, x, y, w, h, c = txx.split(' ')
+        # print(N, idx)
+        idx, x, y, w, h, c = int(idx), max(int(x),0), max(int(y),0), int(w), int(h), float(c)
+
+        if cls == 'car':
+            # car_list_list[idx].append([x, y, x+w, y+h, c])
+            car_list_list[idx].append([x, y, w, h, c])
+        else:
+            hm_list_list[idx].append([x, y, w, h, c])
+            # hm_list_list[idx].append([x, y, x+w, y+h, c])
+
+    return car_list_list, hm_list_list
 
 
 # class Pose_Matcher(IO):
@@ -198,6 +220,7 @@ def enlarge_bbox(bbox, scale):
     #     min_y = 0
     #     max_y = 2
 
+    # bbox_enlarged = [min_x, min_y, width, height]
     bbox_enlarged = [min_x, min_y, max_x, max_y]
     return bbox_enlarged
 
@@ -230,8 +253,8 @@ def pose_matching(graph_A_data, graph_B_data):
 
 
 def get_pose_matching_score(keypoints_A, keypoints_B, bbox_A, bbox_B):
-    print(keypoints_A, type(keypoints_A))
-    print(keypoints_B, type(keypoints_B))
+    # print(keypoints_A, type(keypoints_A))
+    # print(keypoints_B, type(keypoints_B))
     # if keypoints_A == [] or keypoints_B == []:
     #     print("graph not correctly generated!")
     #     return sys.maxsize
@@ -306,7 +329,7 @@ def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
             continue
         pose_matching_score = get_pose_matching_score(keypoints_cur_frame, keypoints_prev_frame, bbox_cur_frame,
                                                       bbox_prev_frame)
-        print('[pse ,atcjomg score', pose_matching_score)
+        # print('[pse ,atcjomg score', pose_matching_score)
 
         if pose_matching_score <= pose_matching_threshold and pose_matching_score <= min_matching_score:
             # match the target based on the pose matching score
@@ -537,10 +560,10 @@ def text_filled(frame, p1, label, color):
     cv2.putText(frame, label, p1, cv2.FONT_HERSHEY_DUPLEX, FONT_SCALE, WHITE, FONT_THINKESS)  # point is left-bottom
 
 
-def text_filled2(frame, p1, label, color,font_sacle, thickness):
+def text_filled2(frame, p1, label, color, font_sacle, thickness):
     txt_size, baseLine1 = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, font_sacle, thickness)
-    p1_ = (p1[0], p1[1] + baseLine1) # left-bottom
-    p2 = (p1[0] + txt_size[0], p1[1] - txt_size[1] ) # top_right
+    p1_ = (p1[0], p1[1] + baseLine1)  # left-bottom
+    p2 = (p1[0] + txt_size[0], p1[1] - txt_size[1])  # top_right
     cv2.rectangle(frame, p1_, p2, color, -1)
     cv2.putText(frame, label, p1, cv2.FONT_HERSHEY_DUPLEX, font_sacle, WHITE, thickness)  # point is left-bottom
 

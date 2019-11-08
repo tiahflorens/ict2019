@@ -63,9 +63,7 @@ def arg_parse():
     
     parser = argparse.ArgumentParser(description='YOLO v3 Video Detection Module')
    
-    parser.add_argument("--video", dest = 'video', help = 
-                        "Video to run detection upon",
-                        default = "video.avi", type = str)
+    parser.add_argument("--video", dest = 'video', help = "Video to run detection upon",default = "video.avi", type = str)
     parser.add_argument("--dataset", dest = "dataset", help = "Dataset on which the network has been trained", default = "pascal")
     parser.add_argument("--confidence", dest = "confidence", help = "Object Confidence to filter predictions", default = 0.5)
     parser.add_argument("--nms_thresh", dest = "nms_thresh", help = "NMS Threshhold", default = 0.4)
@@ -74,7 +72,7 @@ def arg_parse():
                         default = "cfg/yolov3-spp.cfg", type = str)
     parser.add_argument("--weights", dest = 'weightsfile', help = 
                         "weightsfile",
-                        default = "yolov3-spp.weights", type = str)
+                        default = "../models/yolo/yolov3-spp.weights", type = str)
     parser.add_argument("--reso", dest = 'reso', help = 
                         "Input resolution of the network. Increase to increase accuracy. Decrease to increase speed",
                         default = "416", type = str)
@@ -109,7 +107,7 @@ if __name__ == '__main__':
     if CUDA:
         model.cuda()
         
-    model(get_test_input(inp_dim, CUDA), CUDA)
+    # model(get_test_input(inp_dim, CUDA), CUDA)
 
     model.eval()
     

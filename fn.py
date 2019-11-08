@@ -178,6 +178,7 @@ def vis_frame_tmp(frame, im_res, format='coco'):
 
     # im_name = im_res['imgname'].split('/')[-1]
     img = frame
+    # print('im res ', im_res)
     for human in im_res:
         part_line = {}
         kp_preds = human['keypoints']
@@ -199,6 +200,7 @@ def vis_frame_tmp(frame, im_res, format='coco'):
         x, y, w, h = bbox
         track_id = human['track_id']
         text_filled(img, (x,y), f'PERSON:{track_id}',(34, 154, 11))
+        # print('fn.py' , x,y,w,h)
         cv2.rectangle(img, (x, y), (x + w, y + h), (34, 154, 11), 1)
 
 

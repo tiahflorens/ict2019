@@ -13,7 +13,8 @@ delta1 = 1
 mu = 1.7
 delta2 = 2.65
 gamma = 22.48
-scoreThreds = 0.3
+# scoreThreds = 0.3
+scoreThreds = 0.0
 matchThreds = 5
 areaThres = 0  # 40 * 40.5
 alpha = 0.1
@@ -36,9 +37,14 @@ def pose_nms(bboxes, bbox_scores, pose_preds, pose_scores):
 
     final_result = []
 
+    # print(bboxes, bbox_scores, pose_preds, pose_scores)
     ori_bbox_scores = bbox_scores.clone()
     ori_pose_preds = pose_preds.clone()
     ori_pose_scores = pose_scores.clone()
+
+    # ori_bbox_scores = bbox_scores.copy()
+    # ori_pose_preds = pose_preds.copy()
+    # ori_pose_scores = pose_scores.copy()
 
     xmax = bboxes[:, 2]
     xmin = bboxes[:, 0]
