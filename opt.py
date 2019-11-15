@@ -16,7 +16,7 @@ parser.add_argument('--snapshot', default=1, type=int,
 "----------------------------- AlphaPose options -----------------------------"
 parser.add_argument('--addDPG', default=False, type=bool,
                     help='Train with data augmentation')
-parser.add_argument('--sp', default=False, action='store_true',help='Use single process for pytorch')
+parser.add_argument('--sp', default=True, action='store_true',help='Use single process for pytorch')
 parser.add_argument('--profile', default=False, action='store_true',help='add speed profiling at screen output')
 
 "----------------------------- Model options -----------------------------"
@@ -109,7 +109,7 @@ parser.add_argument('--list', dest='inputlist',
                     help='image-list', default="")
 parser.add_argument('--mode', dest='mode',
                     help='detection mode, fast/normal/accurate', default="normal")
-parser.add_argument('--outdir', dest='outputpath',help='output-directory', default="examples/res/")
+parser.add_argument('--outdir', dest='outputpath',help='output-directory', default="/home/peter/extra/dataset/gist/demo2019/ver1")
 parser.add_argument('--inp_dim', dest='inp_dim', type=str, default='608',
                     help='inpdim')
 parser.add_argument('--conf', dest='confidence', type=float, default=0.05,
@@ -130,9 +130,8 @@ parser.add_argument('--posebatch', type=int, default=1, help='pose estimation ma
 parser.add_argument('--video', dest='video',help='video-name', default="/home/peter/dataset/gist/org/mid2019/roaming_kdh_trial_1/trim_student1.avi")
 parser.add_argument('--webcam', dest='webcam', type=str,
                     help='webcam number', default='0')
-parser.add_argument('--save_video', dest='save_video',help='whether to save rendered video', default=False, action='store_true')
-parser.add_argument('--vis_fast', dest='vis_fast',
-                    help='use fast rendering', action='store_true', default=False)
+parser.add_argument('--save_video', dest='save_video',help='whether to save rendered video', default=True, action='store_true')
+parser.add_argument('--vis_fast', dest='vis_fast', help='use fast rendering', action='store_true', default=True)
 opt = parser.parse_args()
 
 opt.num_classes = 80

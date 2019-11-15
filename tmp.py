@@ -13,14 +13,36 @@ from gcn_utils.io import IO
 from gcn_utils.gcn_model import Model
 from gcn_utils.processor_siamese_gcn import SGCN_Processor
 import torchlight
+import numpy as np
 
 UPPER = 'upper'
 LOWER = 'lower'
 MEAN = 'mean'
 
+##### CAR
 GTA_HISTORY = 'gta_history'
 MOVE_HISTORY = 'mv_history'
 CAR_TRACKLET = 'car_tracklet'
+THRESHOLD_CAR_TRACKLET_SIZE = 25
+THRESHOLD_CAR_HISTORY_SIZE = 120
+
+THRESHOLD_CAR_MOVED = 33
+
+##### PERSON
+KEYPOINT_TRACKLET='keypoint_tracklet'
+ENERGY_HISTORY ='energy_history'
+
+THRESHOLD_FIGHT =34
+
+
+
+COLOR_MOVING = (0, 255, 0)
+COLOR_RED = (0, 0, 255)
+
+COLOR_INACTIVE = (255, 0, 0)
+COLOR_YELLOW = (15, 217, 255)
+COLOR_ORANGE = (0, 129, 255)
+
 
 fourcc_avi = cv2.VideoWriter_fourcc('D', 'I', 'V', 'X')
 
@@ -69,6 +91,28 @@ FONT_THINKESS = 1
 FRAME_COUNT_LOC = (30, 50)
 FRAME_DIST_LOC = (990, 50)
 FRAME_STATUS_LOC = (410, 50)
+
+
+def get_nonzero_std(_ss):  # tvc
+    """
+    np.sum(-1) # sum all elements in last axis
+    index = np.sum(-1) != 0     # true/false list if elements is not zero.
+    
+    """
+    
+    s = np.array(_ss)
+    
+    
+    index = s.sum(-1).sum(-1) != 0  # select valid frames
+    """
+    index of valid frame that xyz of joints are not zero
+    """
+    s = s[index]
+    if len(s) != 0:
+        s = s[:, :, 0].std() + s[:, :, 1].std()  # three channels
+    else:
+        s = 0
+    return s
 
 
 def get_bbox_list(txtpath):
@@ -305,9 +349,8 @@ def graph_pair_to_data(sample_graph_pair):
     return data_numpy_pair[0], data_numpy_pair[1]
 
 
-def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame, keypoints_list_prev_frame):
-    assert (len(bbox_list_prev_frame) == len(keypoints_list_prev_frame))
-
+def get_track_id_SGCN(bbox_cur_frame, person_list_prev_frame, keypoints_cur_frame):
+    
     min_index = None
     min_matching_score = sys.maxsize
     pose_matching_threshold = 0.5
@@ -316,13 +359,13 @@ def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
     # if track_id is still not assigned, the person is really missing or track is really lost
     track_id = -1
 
-    for det_index, bbox_det_dict in enumerate(bbox_list_prev_frame):
-        bbox_prev_frame = bbox_det_dict["bbox"]
+    for det_index, bbox_det_dict in enumerate(person_list_prev_frame):
 
         # check the pose matching score
-        keypoints_dict = keypoints_list_prev_frame[det_index]
+        person_dict = person_list_prev_frame[det_index]
         # keypoints_prev_frame = keypoints_dict["keypoints"]
-        keypoints_prev_frame = keypoints_dict["kp_poseflow"]
+        keypoints_prev_frame = person_dict["kp_poseflow"]
+        bbox_prev_frame = person_dict['bbox']
         if isinstance(keypoints_prev_frame, list):
             continue
         if isinstance(keypoints_cur_frame, list):
@@ -339,7 +382,7 @@ def get_track_id_SGCN(bbox_cur_frame, bbox_list_prev_frame, keypoints_cur_frame,
     if min_index is None:
         return -1, None
     else:
-        track_id = bbox_list_prev_frame[min_index]["track_id"]
+        track_id = person_list_prev_frame[min_index]["track_id"]
         return track_id, min_index
 
 

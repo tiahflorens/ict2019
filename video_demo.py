@@ -40,6 +40,15 @@ if __name__ == "__main__":
         videofile ='/home/peter/dataset/gist/org/mid2018/nexpa_fight2.mp4'
     elif videofile == '5':
         videofile ='/home/peter/dataset/gist/org/mid2018/nexpa_vehicle_accident.mp4'
+    elif videofile == '6':
+        videofile ='/home/peter/extra/dataset/gist/demo2019/trim/trim_park_kdh_s2_student1.mp4'
+    elif videofile == '7':
+        videofile ='/home/peter/extra/dataset/gist/demo2019/trim/trim_fight_jh_s1_student4.mp4'
+    elif videofile == '8':
+        videofile ='/home/peter/extra/dataset/gist/demo2019/trim/trim_fight_jh_s2_student4.mp4'
+        
+        
+        
 
     # Load input video
     data_loader = VideoLoader(videofile, batchSize=args.detbatch).start()

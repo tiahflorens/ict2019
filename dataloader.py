@@ -43,7 +43,6 @@ class VideoLoader:
         self.fps = stream.get(cv2.CAP_PROP_FPS)
         self.frameSize = (int(stream.get(cv2.CAP_PROP_FRAME_WIDTH)), int(stream.get(cv2.CAP_PROP_FRAME_HEIGHT)))
         self.stopped = False
-
         self.batchSize = batchSize
         self.datalen = int(stream.get(cv2.CAP_PROP_FRAME_COUNT))
         leftover = 0
@@ -194,7 +193,7 @@ class DetectionLoader:
                 if isinstance(carperson, int) or carperson.shape[0] == 0:
                     for k in range(len(orig_img)):
                         if self.Q.full():
-                            time.sleep(2)
+                            time.sleep(0.5)
                         self.Q.put((orig_img[k], im_name[k], None, None, None, None, None, None))  # 8 elements
                     continue
 
@@ -224,7 +223,7 @@ class DetectionLoader:
                 ckpt_time, masking_time = getTime(ckpt_time)
 
             hm_boxes, hm_scores = None, None
-            # print()
+
             if hm_dets.size(0) > 0:
                 hm_boxes = hm_dets[:, 1:5]
                 hm_scores = hm_dets[:, 5:6]
@@ -267,7 +266,6 @@ class DetectionLoader:
                 self.Q.put(item)
 
             ckpt_time, distribute_time = getTime(ckpt_time)
-            # print('aaaaaaaaaaaaaaaaaaaaa: ', round(det_time,3), round(masking_time,3), round(distribute_time,3))
 
     def read(self):
         # return next frame in the queue
@@ -353,6 +351,12 @@ class DataWriter:
         self.stopped = False
         self.final_result = []
         self.track_dict = {}
+        self.car_trajectory_dict = {}
+        self.person_trajectory_dict = {}
+        self.person_list_list = []
+        self.car_list_list = []
+        self.car_next_id = 0
+        self.person_next_id = 0
         # initialize the queue used to store frames read from
         # the video file
         self.Q = Queue(maxsize=queueSize)
@@ -367,52 +371,222 @@ class DataWriter:
         t.start()
         return self
 
-    def tracking(self, det_list):
+    def car_tracking(self, car_np, img_id):
+        """
+        Assign track_id to detected object.
+        car_np: car objects in numpy form.
+        """
 
+        new_car_bboxs = car_np[:, 1:5].astype(np.uint32)  # b/  x y w h c / cls_conf, cls_idx
+        new_car_score = car_np[:, 5]
+        cls_conf = car_np[:, 6]
+        car_dest_list = []
+
+        if img_id > 1:  # First frame does not have previous frame
+            car_bbox_list_prev_frame = self.car_list_list[img_id - 1].copy()
+        else:
+            car_bbox_list_prev_frame = []
+
+        # print('car bbox list prev frame ', len(car_bbox_list_prev_frame))
+        for c, score, conf in zip(new_car_bboxs, new_car_score, cls_conf):
+            car_bbox_det = c
+            bbox_in_xywh = enlarge_bbox(car_bbox_det, enlarge_scale)
+            bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+
+            if img_id == 0:  # First frame, all ids are assigned automatically
+                car_track_id = self.car_next_id
+                self.car_next_id += 1
+            else:
+                car_track_id, match_index = get_track_id_SpatialConsistency(bbox_det,
+                                                                            car_bbox_list_prev_frame)
+                # print(car_track_id, match_index)
+                if car_track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
+                    del car_bbox_list_prev_frame[match_index]
+
+            bbox_det_dict = {"img_id": img_id,
+                             "track_id": car_track_id,
+                             "bbox": bbox_det,
+                             "score": score,
+                             "conf": conf}
+            car_dest_list.append(bbox_det_dict)
+
+        for car_bbox_det_dict in car_dest_list:  # detections for current frame
+            if car_bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
+                car_bbox_det_dict["track_id"] = self.car_next_id
+                self.car_next_id += 1
+
+        return car_dest_list
+
+    def person_tracking(self, boxes, scores, hm_data, pt1, pt2, img_id):
+
+        person_list = []
+
+        if opt.matching:  # TODO Check the difference,
+            preds = getMultiPeakPrediction(
+                hm_data, pt1.numpy(), pt2.numpy(), opt.inputResH, opt.inputResW, opt.outputResH,
+                opt.outputResW)
+            result = matching(boxes, scores.numpy(), preds)
+        else:
+            preds_hm, preds_img, preds_scores = getPrediction(hm_data, pt1, pt2, opt.inputResH,
+                                                              opt.inputResW, opt.outputResH,
+                                                              opt.outputResW)
+            result = pose_nms(boxes, scores, preds_img, preds_scores)  # list type
+            # result = {  'keypoints': ,  'kp_score': , 'proposal_score': ,  'bbox' }
+
+        if img_id > 0:  # First frame does not have previous frame
+            person_list_prev_frame = self.person_list_list[img_id - 1].copy()
+        else:
+            person_list_prev_frame = []
+
+        num_dets = len(result)
+        for det_id in range(num_dets):  # IOU tracking for detections in current frame.
+            # detections for current frame, obtain bbox position and track id
+
+            result_box = result[det_id]
+            kp_score = result_box['kp_score']
+            proposal_score = result_box['proposal_score'].numpy()[0]
+            if proposal_score < 1.3:  # TODO check person proposal threshold
+                continue
+
+            keypoints = result_box['keypoints']  # torch, (17,2)
+            keypoints_pf = np.zeros((15, 2))
+
+            idx_list = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 0, 0, 0]
+            for i, idx in enumerate(idx_list):
+                keypoints_pf[i] = keypoints[idx]
+            keypoints_pf[12] = (keypoints[5] + keypoints[6]) / 2  # neck
+
+            # COCO-order {0-nose    1-Leye    2-Reye    3-Lear    4Rear    5-Lsho    6-Rsho    7-Lelb    8-Relb    9-Lwri    10-Rwri    11-Lhip    12-Rhip    13-Lkne    14-Rkne    15-Lank    16-Rank}　
+            # PoseFLow order  #{0-Rank    1-Rkne    2-Rhip    3-Lhip    4-Lkne    5-Lank    6-Rwri    7-Relb    8-Rsho    9-Lsho   10-Lelb    11-Lwri    12-neck  13-nose　14-TopHead}
+            bbox_det = bbox_from_keypoints(keypoints)  # xxyy
+
+            # enlarge bbox by 20% with same center position
+            bbox_in_xywh = enlarge_bbox(bbox_det, enlarge_scale)
+            bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
+
+            # # update current frame bbox
+            if img_id == 0:  # First frame, all ids are assigned automatically
+                track_id = self.person_next_id
+                self.person_next_id += 1
+            else:
+                track_id, match_index = get_track_id_SpatialConsistency(bbox_det, person_list_prev_frame)
+                if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
+                    del person_list_prev_frame[match_index]
+
+            person_det_dict = {"img_id": img_id,
+                               "det_id": det_id,
+                               "track_id": track_id,
+                               "bbox": bbox_det,
+                               "keypoints": keypoints,
+                               'kp_poseflow': keypoints_pf,
+                               'kp_score': kp_score,
+                               'proposal_score': proposal_score}
+
+            person_list.append(person_det_dict)
+
+        num_dets = len(person_list)
+        for det_id in range(num_dets):  # if IOU tracking failed, run pose matching tracking.
+            person_dict = person_list[det_id]
+
+            if person_dict["track_id"] == -1:  # this id means matching not found yet
+                # track_id = bbox_det_dict["track_id"]
+                track_id, match_index = get_track_id_SGCN(person_dict["bbox"], person_list_prev_frame,
+                                                          person_dict["kp_poseflow"])
+
+                if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
+                    del person_list_prev_frame[match_index]
+                    person_dict["track_id"] = track_id
+                else:
+                    # if still can not find a match from previous frame, then assign a new id
+                    # if track_id == -1 and not bbox_invalid(bbox_det_dict["bbox"]):
+                    person_dict["track_id"] = self.person_next_id
+                    self.person_next_id += 1
+
+        return person_list
+
+    def person_tracjectory(self, det_list):
+        for det in det_list:
+            track_id = det['track_id']
+            keypoint = det['keypoints'].numpy()
+            if track_id in self.person_trajectory_dict.keys():
+                person_dict = self.person_trajectory_dict[track_id]
+                tracklet = person_dict[KEYPOINT_TRACKLET]
+                tracklet.append(keypoint)
+                    
+                if len(tracklet) > 25: 
+                    tracklet = tracklet[1:]
+                    person_dict[KEYPOINT_TRACKLET] = tracklet
+
+            else:
+                person_dict = {KEYPOINT_TRACKLET: [keypoint],
+                               ENERGY_HISTORY: [0]}
+
+            self.person_trajectory_dict[track_id] = person_dict
+
+    def car_trajectory(self, det_list):
         for det in det_list:
             track_id = det['track_id']
             xyxy = xywh_to_x1y1x2y2(det['bbox'])
 
-            if track_id in self.track_dict.keys():
-                track_obj = self.track_dict[track_id]
+            if track_id in self.car_trajectory_dict.keys():
+                track_obj = self.car_trajectory_dict[track_id]
                 tracklet = track_obj[CAR_TRACKLET]
                 history = track_obj[MOVE_HISTORY]
-                moved = 0
-                if len(tracklet) > 1:
-                    dist, diag = avg_dist(tracklet)
-                    th = diag * 0.02
-                    # TODO more condition,
-                    # center of bbox is actually moved? |x1-x2| > 20
-                    if dist > th:
-                        moved = 1
-                    else:
-                        moved = 0
-                history.append(moved)
+                
                 tracklet.append(xyxy)
-
-                if len(tracklet) > 25:
+                
+                if len(tracklet) > THRESHOLD_CAR_TRACKLET_SIZE: # 25
                     tracklet = tracklet[1:]
-                if len(history) > 120:
+                    
+                if len(tracklet) > 1:
+                    dist, diag  = avg_dist(tracklet)
+                    th = diag * 0.02   
+                
+                    if dist > th : # moved
+                        history.append(1)
+                    else: 
+                        history.append(0)
+
+                if len(history) > THRESHOLD_CAR_HISTORY_SIZE: # 120
                     history = history[1:]
-                # if len()
 
                 track_obj[CAR_TRACKLET] = tracklet
-                track_obj[MOVE_HISTORY] = history
+                track_obj[MOVE_HISTORY] = history 
 
             else:
                 track_obj = {CAR_TRACKLET: [xyxy],
                              MOVE_HISTORY: [0],
-                             GTA_HISTORY: [0]
-                             }
+                             GTA_HISTORY: [0]}
 
-            self.track_dict[track_id] = track_obj
+            self.car_trajectory_dict[track_id] = track_obj
+
+    def robeery_detection(self):
+        pass
+
+    def fight_detection(self, det_list):
+        for det in det_list:
+            track_id = det['track_id']
+            car_dict = self.person_trajectory_dict[track_id]
+            tracklet = car_dict[KEYPOINT_TRACKLET]
+            history = car_dict[ENERGY_HISTORY]
+            
+            if len(tracklet) > 1:
+                # print(track_id , tracklet)
+                enegry = get_nonzero_std(tracklet)
+                history.append(enegry)
+            
+            if len(tracklet) > 25:
+                tracklet = tracklet[1:]
+            if len(history) > 30:
+                history = history[1:]
+                # if len()
+
+            car_dict[CAR_TRACKLET] = tracklet
+            car_dict[MOVE_HISTORY] = history 
+            
 
     def update(self):
         next_id = 0
-        car_next_id = 0
-        bbox_dets_list_list = []
-        keypoints_list_list = []
-        car_dets_list_list = []
 
         while True:
             # if the thread indicator variable is set, stop the
@@ -433,157 +607,16 @@ class DataWriter:
 
                 # text_filled2(img,(5,200),str(img_id),LIGHT_GREEN,2,2)
 
-                bbox_dets_list = []  # keyframe: start from empty
-                keypoints_list = []  # keyframe: start from empty
-                # print(boxes)
+                """
+                PERSON
+                """
                 if boxes is None:  # No person detection
+                    person_list = []
                     pass
-                    # bbox_det_dict = {"img_id": img_id,
-                    #                  "det_id": 0,
-                    #                  "track_id": None,
-                    #                  "bbox": [0, 0, 2, 2]}
-                    # bbox_dets_list.append(bbox_det_dict)
-                    #
-                    # keypoints_dict = {"img_id": img_id,
-                    #                   "det_id": 0,
-                    #                   "track_id": None,
-                    #                   "keypoints": []}
-                    # keypoints_list.append(keypoints_dict)
-
-
                 else:
-                    if opt.matching:
-                        preds = getMultiPeakPrediction(
-                            hm_data, pt1.numpy(), pt2.numpy(), opt.inputResH, opt.inputResW, opt.outputResH,
-                            opt.outputResW)
-                        result = matching(boxes, scores.numpy(), preds)
-                    else:
-
-                        preds_hm, preds_img, preds_scores = getPrediction(hm_data, pt1, pt2, opt.inputResH,
-                                                                          opt.inputResW, opt.outputResH,
-                                                                          opt.outputResW)
-                        result = pose_nms(boxes, scores, preds_img, preds_scores)  # list type
-                        # result = {  'keypoints': ,  'kp_score': , 'proposal_score': ,  'bbox' }
-
-                    if img_id > 0:  # First frame does not have previous frame
-                        bbox_list_prev_frame = bbox_dets_list_list[img_id - 1].copy()
-                        keypoints_list_prev_frame = keypoints_list_list[img_id - 1].copy()
-                    else:
-                        bbox_list_prev_frame = []
-                        keypoints_list_prev_frame = []
-
-                    # boxes.size(0)
-                    num_dets = len(result)
-                    for det_id in range(num_dets):  # IOU tracking for detections in current frame.
-                        # detections for current frame
-                        # obtain bbox position and track id
-
-                        result_box = result[det_id]
-                        kp_score = result_box['kp_score']
-                        proposal_score = result_box['proposal_score'].numpy()[0]
-                        if proposal_score < 1.3:
-                            continue
-
-                        keypoints = result_box['keypoints']  # torch, (17,2)
-                        keypoints_pf = np.zeros((15, 2))
-
-                        idx_list = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 0, 0, 0]
-                        for i, idx in enumerate(idx_list):
-                            keypoints_pf[i] = keypoints[idx]
-                        keypoints_pf[12] = (keypoints[5] + keypoints[6]) / 2  # neck
-
-                        # COCO-order {0-nose    1-Leye    2-Reye    3-Lear    4Rear    5-Lsho    6-Rsho    7-Lelb    8-Relb    9-Lwri    10-Rwri    11-Lhip    12-Rhip    13-Lkne    14-Rkne    15-Lank    16-Rank}　
-                        # PoseFLow order  #{0-Rank    1-Rkne    2-Rhip    3-Lhip    4-Lkne    5-Lank    6-Rwri    7-Relb    8-Rsho    9-Lsho   10-Lelb    11-Lwri    12-neck  13-nose　14-TopHead}
-
-                        bbox_det = bbox_from_keypoints(keypoints)  # xxyy
-
-                        # enlarge bbox by 20% with same center position
-                        # bbox_x1y1x2y2 = xywh_to_x1y1x2y2(bbox_det)
-                        bbox_in_xywh = enlarge_bbox(bbox_det, enlarge_scale)
-                        # print('enlared', bbox_in_xywh)
-                        bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
-                        # print('converted', bbox_det)
-
-                        # Keyframe: use provided bbox
-                        # if bbox_invalid(bbox_det):
-                        #     track_id = None  # this id means null
-                        #     keypoints = []
-                        #     bbox_det = [0, 0, 2, 2]
-                        #     # update current frame bbox
-                        #     bbox_det_dict = {"img_id": img_id,
-                        #                      "det_id": det_id,
-                        #                      "track_id": track_id,
-                        #                      "bbox": bbox_det}
-                        #     bbox_dets_list.append(bbox_det_dict)
-                        #     # update current frame keypoints
-                        #     keypoints_dict = {"img_id": img_id,
-                        #                       "det_id": det_id,
-                        #                       "track_id": track_id,
-                        #                       "keypoints": keypoints}
-                        #     keypoints_list.append(keypoints_dict)
-                        #     continue
-
-                        # # update current frame bbox
-
-                        if img_id == 0:  # First frame, all ids are assigned automatically
-                            track_id = next_id
-                            next_id += 1
-                        else:
-                            track_id, match_index = get_track_id_SpatialConsistency(bbox_det, bbox_list_prev_frame)
-                            # print('track' ,track_id, match_index)
-
-                            if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
-                                del bbox_list_prev_frame[match_index]
-                                del keypoints_list_prev_frame[match_index]
-
-                        # update current frame bbox
-                        bbox_det_dict = {"img_id": img_id,
-                                         "det_id": det_id,
-                                         "track_id": track_id,
-                                         "bbox": bbox_det}
-
-                        # update current frame keypoints
-                        keypoints_dict = {"img_id": img_id,
-                                          "det_id": det_id,
-                                          "track_id": track_id,
-                                          "keypoints": keypoints,
-                                          'kp_poseflow': keypoints_pf,
-                                          'kp_score': kp_score,
-                                          'bbox': bbox_det,
-                                          'proposal_score': proposal_score}
-
-                        bbox_dets_list.append(bbox_det_dict)
-                        keypoints_list.append(keypoints_dict)
-
-                    num_dets = len(bbox_dets_list)
-                    for det_id in range(num_dets):  # if IOU tracking failed, run pose matching tracking.
-                        bbox_det_dict = bbox_dets_list[det_id]
-                        keypoints_dict = keypoints_list[det_id]
-
-                        # assert (det_id == bbox_det_dict["det_id"])
-                        # assert (det_id == keypoints_dict["det_id"])
-
-                        if bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
-                            # track_id = bbox_det_dict["track_id"]
-                            track_id, match_index = get_track_id_SGCN(bbox_det_dict["bbox"], bbox_list_prev_frame,
-                                                                      keypoints_dict["kp_poseflow"],
-                                                                      keypoints_list_prev_frame)
-
-                            if track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
-                                del bbox_list_prev_frame[match_index]
-                                del keypoints_list_prev_frame[match_index]
-                                bbox_det_dict["track_id"] = track_id
-                                keypoints_dict["track_id"] = track_id
-
-                            # if still can not find a match from previous frame, then assign a new id
-                            # if track_id == -1 and not bbox_invalid(bbox_det_dict["bbox"]):
-                            if track_id == -1:
-                                bbox_det_dict["track_id"] = next_id
-                                keypoints_dict["track_id"] = next_id
-                                next_id += 1
-
+                    person_list = self.person_tracking(boxes, scores, hm_data, pt1, pt2, img_id)
                     # update frame
-                    vis_frame(img, keypoints_list)
+                    vis_frame(img, person_list)
 
                 """
                 Car
@@ -591,69 +624,25 @@ class DataWriter:
 
                 if CAR is not None:
                     car_np = CAR
-                    new_car_bboxs = car_np[:, 1:5].astype(np.uint32)  # b/  x y w h c / cls_conf, cls_idx
-                    new_car_score = car_np[:, 5]
-                    cls_conf = car_np[:, 6]
-                    car_dest_list = []
-
-                    if img_id > 1:  # First frame does not have previous frame
-                        car_bbox_list_prev_frame = car_dets_list_list[img_id - 1].copy()
-                    else:
-                        car_bbox_list_prev_frame = []
-
-                    # print('car bbox list prev frame ', len(car_bbox_list_prev_frame))
-                    for c, score, conf in zip(new_car_bboxs, new_car_score, cls_conf):
-                        car_bbox_det = c
-                        bbox_in_xywh = enlarge_bbox(car_bbox_det, enlarge_scale)
-                        bbox_det = x1y1x2y2_to_xywh(bbox_in_xywh)
-
-                        if img_id == 0:  # First frame, all ids are assigned automatically
-                            car_track_id = car_next_id
-                            car_next_id += 1
-                        else:
-                            car_track_id, match_index = get_track_id_SpatialConsistency(bbox_det,
-                                                                                        car_bbox_list_prev_frame)
-                            # print(car_track_id, match_index)
-                            if car_track_id != -1:  # if candidate from prev frame matched, prevent it from matching another
-                                del car_bbox_list_prev_frame[match_index]
-
-                        bbox_det_dict = {"img_id": img_id,
-                                         "track_id": car_track_id,
-                                         "bbox": bbox_det,
-                                         "score": score,
-                                         "conf": conf}
-                        car_dest_list.append(bbox_det_dict)
-
-                    for car_bbox_det_dict in car_dest_list:  # detections for current frame
-                        if car_bbox_det_dict["track_id"] == -1:  # this id means matching not found yet
-                            car_bbox_det_dict["track_id"] = car_next_id
-                            car_next_id += 1
-
-                    self.tracking(car_dest_list)
-                    car_dets_list_list.append(car_dest_list)
-
+                    car_dest_list = self.car_tracking(car_np, img_id)
                 else:
                     car_dest_list = []
-                    bbox_det_dict = {"img_id": img_id,
-                                     "det_id": 0,
-                                     "track_id": None,
-                                     "bbox": [0, 0, 2, 2],
-                                     "score": 0,
-                                     "conf": 0}
-                    car_dest_list.append(bbox_det_dict)
-                    car_dets_list_list.append(car_dest_list)
 
-                bbox_dets_list_list.append(bbox_dets_list)
-                keypoints_list_list.append(keypoints_list)
+                self.car_list_list.append(car_dest_list)
+                self.person_list_list.append(person_list)
 
+                self.car_trajectory(car_dest_list)
+                self.person_tracjectory(person_list)
 
                 # FOR GIST2019
-                # if img_id != 0:
-                #     self.car_person_detection(car_dest_list, bbox_dets_list, img)
-                #     self.car_parking_detection(car_dest_list, img, img_id)
+                if img_id != 0:
+                    self.fight_detection(person_list)
+                    # self.parking_detection(car_dest_list, img, img_id)
+                    # self.car_person_detection(car_dest_list, bbox_dets_list, img)
+                    
 
-                #FOR NEXPA
-                self.person_nexpa(bbox_dets_list,img,img_id)
+                # FOR NEXPA
+                # self.person_nexpa(bbox_dets_list,img,img_id)
 
                 ckpt_time, det_time = getTime(start_time)
                 # cv2.putText(img, str(1 / det_time), (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 1)
@@ -691,35 +680,7 @@ class DataWriter:
                     overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-
-    def person_nexpa(self, hm_dets_list, img, img_id):
-
-        if 425 < img_id < 560:
-            size = 8
-            imgW, imgH = img.shape[1], img.shape[0]
-            for human in hm_dets_list:
-                human_track_id = human['track_id']
-                if human_track_id is None:
-                    continue
-                hum_bbox = human['bbox']
-                boxa = xywh_to_x1y1x2y2(hum_bbox)
-                x, y, w, h = x1y1x2y2_to_xywh(boxa)
-
-                if human_track_id < 3:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = RED
-                    overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-                if img_id % 10== 0:
-                    cv2.rectangle(img, (size, size), (imgW - size, imgH - size), RED, size)
-                text_filled2(img, (10, 80), 'Violence!!', RED, 1, 1)
-
-
-
-    def car_parking_detection(self, car_dest_list, img, img_id):
+    def parking_detection(self, car_dest_list, img, img_id):
 
         imgW, imgH = img.shape[1], img.shape[0]
         for car in car_dest_list:
@@ -727,151 +688,70 @@ class DataWriter:
             track_id = car['track_id']
             score = car['score']
             conf = car['conf']
-            LAST_MOVED_COUNT = -180
-            tracker = self.track_dict[track_id]
+            
+            fps = 30
+            
+            
+            LAST_MOVED_10_COUNT = -10
+            LAST_MOVED_5s_COUNT = fps * -5
+            LAST_MOVED_8s_COUNT = fps * -8
+            
+            tracker = self.car_trajectory_dict[track_id]
             history = tracker[MOVE_HISTORY]
-            moved = np.sum(history[-10:])
-            last_moved = np.sum(history[LAST_MOVED_COUNT:])
+            moved1s = np.sum(history[LAST_MOVED_10_COUNT:])
+            moved5s = np.sum(history[LAST_MOVED_5s_COUNT:])
 
-            COLOR_MOVING = (0, 255, 0)
-            COLOR_RED = (0, 0, 255)
-
-            COLOR_INACTIVE = (255, 0, 0)
-            YELLOW = (15, 217, 255)
-            ORANGE = (0, 129, 255)
             cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
             text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
 
             #############################################
             ################ TODO GTA
             caution_time = 16
-            suspicious_time= 8
-            warning_time =4
-            if 295 < img_id < 420:
+            suspicious_time = 8
+            warning_time = 4
+            
+            if moved1s: # moving now
+                cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_MOVING, 1)
+                text_filled(img, (x, y), f'CAR {track_id} Active', COLOR_MOVING)
+            else: # not moving.
 
-                if track_id == 4:
+                if moved5s: # moved last 5 sec
                     cv2.rectangle(img, (x, y), (x + w, y + h), YELLOW, 1)
-                    text_filled(img, (x, y), f'CAR {track_id} Inactive', YELLOW)
+                    text_filled(img, (x, y), f'CAR {track_id} STOP', YELLOW)
 
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = YELLOW
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-
-                if img_id%caution_time ==0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), YELLOW, 10)
-                text_filled2(img, (10, 80), 'Caution!!', YELLOW, 2, 2)
-
-            elif 420 < img_id < 740:
-                if track_id == 4:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), YELLOW, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', YELLOW)
                     cropped = img[y:y + h, x:x + w, :]
                     filter = np.zeros(cropped.shape, dtype=img.dtype)
                     # print(cropped.shape, filter.shape)
                     filter[:, :, :] = YELLOW
-                    # print(overlay.shape)
-
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
+                    overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
                     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-                if img_id % caution_time== 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), YELLOW, 10)
-                text_filled2(img, (10, 80), 'Caution!!', YELLOW, 2, 2)
-
-            elif 740 < img_id < 960:
-
-                if track_id == 4 or track_id == 3:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), ORANGE, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', ORANGE)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    # print(cropped.shape, filter.shape)
-                    filter[:, :, :] = ORANGE
-                    # print(overlay.shape)
-
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-
-                if img_id % suspicious_time == 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), ORANGE, 10)
-                text_filled2(img, (10, 80), 'Suspicious!!!!!!', ORANGE, 2, 2)
-
-            elif 960 < img_id < 1450:
-                if track_id == 3:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), ORANGE, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', ORANGE)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = ORANGE
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
+                    cv2.rectangle(img, (3, 3), (imgW - 10, imgH - 20), YELLOW, 10)
+                    text_filled2(img, (10, 80), 'Red zone Stop!!', YELLOW, 2, 2)
 
 
-                if img_id % suspicious_time == 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), ORANGE, 10)
-                text_filled2(img, (10, 80), 'Suspicious!!!!!!', ORANGE, 2, 2)
+                else:
+                    pass
+                    
 
+                    # if track_id == 13:
+                    #     cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
+                    #     text_filled(img, (x, y), f'{track_id} Parking', RED)
+                    #     cropped = img[y:y + h, x:x + w, :]
+                    #     filter = np.zeros(cropped.shape, dtype=img.dtype)
+                    #     # print(cropped.shape, filter.shape)
+                    #     filter[:, :, 2] = 255
+                    #     # print(overlay.shape)
+                    #     # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
+                    #     overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
+                    #     img[y:y + h, x:x + w, :] = overlayed[:, :, :]
 
-            elif 1450 < img_id:
-                if track_id == 3:
-                    cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
-                    text_filled(img, (x, y), f'{track_id} Inactive', RED)
-                    cropped = img[y:y + h, x:x + w, :]
-                    filter = np.zeros(cropped.shape, dtype=img.dtype)
-                    filter[:, :, :] = RED
-                    overlayed = cv2.addWeighted(cropped, 0.9, filter, 0.1, 0)
-                    img[y:y + h, x:x + w, :] = overlayed[:, :, :]
+                    #     cv2.rectangle(img, (0, 0), (imgW - 15, imgH - 15), RED, 10)
+                    #     text_filled2(img, (10, 80), 'Red zone PARKING!!', RED, 2, 2)
 
-                if img_id % warning_time == 0:
-                    cv2.rectangle(img, (10, 10), (imgW - 10, imgH - 10), RED, 10)
-                text_filled2(img, (10, 80), 'Warning!!!!!!', RED, 2, 2)
-
-    ##############################################################3
-    ##############TODO Parking
-    # if moved:
-    #     cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_MOVING, 1)
-    #     text_filled(img, (x, y), f'CAR {track_id} Active', COLOR_MOVING)
-    # else:
-    #
-    #     if last_moved:
-    #         cv2.rectangle(img, (x, y), (x + w, y + h), YELLOW, 1)
-    #         text_filled(img, (x, y), f'CAR {track_id} STOP', YELLOW)
-    #
-    #         cropped = img[y:y + h, x:x + w, :]
-    #         filter = np.zeros(cropped.shape, dtype=img.dtype)
-    #         # print(cropped.shape, filter.shape)
-    #         filter[:, :, :] = YELLOW
-    #         # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
-    #         overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
-    #         img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-    #
-    #         cv2.rectangle(img, (3, 3), (imgW - 10, imgH - 20), YELLOW, 10)
-    #         text_filled2(img, (10, 80), 'Red zone Stop!!', YELLOW, 2, 2)
-    #
-    #
-    #     else:
-    #
-    #         if track_id == 13:
-    #             cv2.rectangle(img, (x, y), (x + w, y + h), RED, 1)
-    #             text_filled(img, (x, y), f'{track_id} Parking', RED)
-    #             cropped = img[y:y + h, x:x + w, :]
-    #             filter = np.zeros(cropped.shape, dtype=img.dtype)
-    #             # print(cropped.shape, filter.shape)
-    #             filter[:, :, 2] = 255
-    #             # print(overlay.shape)
-    #             # cv2.rectangle(overlay, (0, 0), (w, h), COLOR_RED, -1)
-    #             overlayed = cv2.addWeighted(cropped, 0.8, filter, 0.2, 0)
-    #             img[y:y + h, x:x + w, :] = overlayed[:, :, :]
-    #
-    #             cv2.rectangle(img, (0, 0), (imgW - 15, imgH - 15), RED, 10)
-    #             text_filled2(img, (10, 80), 'Red zone PARKING!!', RED, 2, 2)
-    #
-    #         else:
-    #             text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
-    #             cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
+                    # else:
+                    #     text_filled(img, (x, y), f'{track_id} Inactive', COLOR_INACTIVE)
+                    #     cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_INACTIVE, 1)
 
     def running(self):
         # indicate that the thread is still running
